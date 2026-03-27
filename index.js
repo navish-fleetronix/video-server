@@ -12,7 +12,7 @@ const CONFIG = {
     tcpPort:  3007,
     httpPort: 8080,
     wsPort:   8801,
-    serverIp: 'YOUR_SERVER_IP', // ← change this
+    serverIp: process.env.SERVER_IP
 };
 
 // ── Create output folder ──────────────────────────────────────────────────────
