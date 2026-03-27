@@ -138,18 +138,23 @@ function handleVideoFrame(h264Data, channel, dataType) {
     // Check if data partitioning (types 2,3,4)
     const hasDP = nalUnits.some(n => n.type === 2);
     if (hasDP) {
-        const part2 = nalUnits.find(n => n.type === 2);
-        const part3 = nalUnits.find(n => n.type === 3);
-        const part4 = nalUnits.find(n => n.type === 4);
-
-        // Combine all parts into one frame
-        const parts = [part2, part3, part4].filter(Boolean).map(n => n.data);
-        const combined = Buffer.concat(parts);
-        console.log(`ch${channel} DP combined size:${combined.length}`);
-
+        const converted = convertDataPartitioning(h264Data);
         if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
-            ch.ffmpeg.stdin.write(combined);
+        ch.ffmpeg.stdin.write(converted);
         }
+        return;
+        // const part2 = nalUnits.find(n => n.type === 2);
+        // const part3 = nalUnits.find(n => n.type === 3);
+        // const part4 = nalUnits.find(n => n.type === 4);
+
+        // // Combine all parts into one frame
+        // const parts = [part2, part3, part4].filter(Boolean).map(n => n.data);
+        // const combined = Buffer.concat(parts);
+        // console.log(`ch${channel} DP combined size:${combined.length}`);
+
+        // if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
+        //     ch.ffmpeg.stdin.write(combined);
+        // }
         return;
     }
 
@@ -158,7 +163,31 @@ function handleVideoFrame(h264Data, channel, dataType) {
         ch.ffmpeg.stdin.write(h264Data);
     }
 }
+function convertDataPartitioning(h264Data) {
+    const output = Buffer.from(h264Data); // copy
+    let i = 0;
+    while (i < output.length - 5) {
+        if (output[i] === 0 && output[i+1] === 0 && 
+            output[i+2] === 0 && output[i+3] === 1) {
+            
+            const nalType = output[i+4] & 0x1F;
+            const nalRef  = (output[i+4] >> 5) & 0x03;
 
+            if (nalType === 2) {
+                // Convert partition A → normal slice (type 1)
+                output[i+4] = (nalRef << 5) | 1;
+                console.log('Converted NAL 2 → 1');
+            } else if (nalType === 3 || nalType === 4) {
+                // Remove partition B and C by zeroing them out
+                output[i+4] = 0;
+            }
+            i += 4;
+        } else {
+            i++;
+        }
+    }
+    return output;
+}
 // ── Reassemble subpackets ─────────────────────────────────────────────────────
 function processVideoPacket(h264Data, channel, dataType, subpktMarker) {
     const ch = channels[channel];
