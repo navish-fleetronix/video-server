@@ -26,21 +26,33 @@ console.log(`✓ WebSocket on :${CONFIG.wsPort}`);
 
 // ── HTTP server (serves video.html) ──────────────────────────────────────────
 http.createServer((req, res) => {
-    let filePath = req.url === '/' ? './video.html' : `.${req.url}`;
-    if (req.url.startsWith('/public/')) filePath = `.${req.url}`;
+    let filePath;
+    
+    if (req.url === '/') {
+        filePath = './video.html';
+    } else if (req.url.startsWith('/public/')) {
+        filePath = `.${req.url}`;  // → ./public/ch1.m3u8
+    } else {
+        filePath = `.${req.url}`;
+    }
+
+    console.log('Serving:', filePath); // ← add this to debug
 
     const ext = path.extname(filePath).toLowerCase();
     const contentTypes = {
         '.html': 'text/html',
         '.js':   'application/javascript',
-        '.css':  'text/css',
-        '.wasm': 'application/wasm',
         '.m3u8': 'application/vnd.apple.mpegurl',
         '.ts':   'video/mp2t',
     };
 
     fs.readFile(filePath, (err, data) => {
-        if (err) { res.writeHead(404); res.end('Not found'); return; }
+        if (err) { 
+            console.error('File not found:', filePath);
+            res.writeHead(404); 
+            res.end('Not found'); 
+            return; 
+        }
         res.writeHead(200, {
             'Content-Type': contentTypes[ext] || 'text/plain',
             'Access-Control-Allow-Origin': '*',
