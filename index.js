@@ -14,7 +14,7 @@ const CONFIG = {
     wsPort:   8801,
     serverIp: process.env.SERVER_IP
 };
-
+console.log(`Server IP: ${CONFIG.serverIp}`);
 // ── Create output folder ──────────────────────────────────────────────────────
 if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 
