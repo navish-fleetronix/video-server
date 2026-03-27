@@ -66,22 +66,20 @@ http.createServer((req, res) => {
 
 // ── FFmpeg for HLS ────────────────────────────────────────────────────────────
 function startFFmpeg(channel) {
-    const ffmpeg = spawn('ffmpeg', [
-        '-fflags',       '+genpts+discardcorrupt',  // ← handle corrupt/missing frames
-        '-f',            'h264',
-        '-i',            'pipe:0',
-        '-c:v',          'libx264',
-        '-preset',       'ultrafast',
-        '-tune',         'zerolatency',
-        '-g',            '30',           // keyframe every 30 frames
-        '-sc_threshold', '0',
-        '-f',            'hls',
-        '-hls_time',     '1',
-        '-hls_list_size','3',
-        '-hls_flags',    'delete_segments+append_list+split_by_time',
-        '-hls_segment_type', 'mpegts',
-        `./public/ch${channel}.m3u8`,
-    ]);
+    const ffmpeg = spawn('/usr/local/bin/ffmpeg', [
+    '-fflags',        '+genpts+discardcorrupt+igndts',
+    '-err_detect',    'ignore_err',
+    '-f',             'h264',
+    '-i',             'pipe:0',
+    '-c:v',           'libx264',
+    '-preset',        'ultrafast',
+    '-tune',          'zerolatency',
+    '-f',             'hls',
+    '-hls_time',      '1',
+    '-hls_list_size', '3',
+    '-hls_flags',     'delete_segments+append_list',
+    `./public/ch${channel}.m3u8`,
+]);
     ffmpeg.stderr.on('data', d => console.log(`FFmpeg ch${channel}:`, d.toString().trim()));
     ffmpeg.on('close', code => {
         console.log(`FFmpeg ch${channel} closed, restarting...`);
