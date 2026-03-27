@@ -106,10 +106,19 @@ function handleVideoFrame(h264Data, channel, dataType) {
         console.log(`ch${channel} ✅ I_FRAME size:${h264Data.length}`);
     }
 
-    // ← Only write to FFmpeg starting from I_FRAME
-    if (!ch.gotIFrame) {
-        console.log(`ch${channel} waiting for I_FRAME...`);
-        return;
+    if (!ch.gotIFrame) return;
+
+    // Check NAL type
+    let i = 0;
+    while (i < h264Data.length - 4) {
+        if (h264Data[i] === 0 && h264Data[i+1] === 0 && 
+            h264Data[i+2] === 0 && h264Data[i+3] === 1) {
+            const nalType = h264Data[i+4] & 0x1F;
+            console.log(`ch${channel} NAL type: ${nalType}`);
+            i += 4;
+        } else {
+            i++;
+        }
     }
 
     if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
