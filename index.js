@@ -108,19 +108,52 @@ function handleVideoFrame(h264Data, channel, dataType) {
 
     if (!ch.gotIFrame) return;
 
-    // Check NAL type
+    // Collect NAL units
+    const nalUnits = [];
     let i = 0;
     while (i < h264Data.length - 4) {
         if (h264Data[i] === 0 && h264Data[i+1] === 0 && 
             h264Data[i+2] === 0 && h264Data[i+3] === 1) {
+            
+            // Find next NAL start
+            let next = h264Data.length;
+            for (let j = i + 4; j < h264Data.length - 4; j++) {
+                if (h264Data[j] === 0 && h264Data[j+1] === 0 && 
+                    h264Data[j+2] === 0 && h264Data[j+3] === 1) {
+                    next = j;
+                    break;
+                }
+            }
+
             const nalType = h264Data[i+4] & 0x1F;
-            console.log(`ch${channel} NAL type: ${nalType}`);
-            i += 4;
+            const nalData = h264Data.slice(i, next);
+            nalUnits.push({ type: nalType, data: nalData });
+            console.log(`ch${channel} NAL type:${nalType} size:${nalData.length}`);
+            i = next;
         } else {
             i++;
         }
     }
 
+    // Check if data partitioning (types 2,3,4)
+    const hasDP = nalUnits.some(n => n.type === 2);
+    if (hasDP) {
+        const part2 = nalUnits.find(n => n.type === 2);
+        const part3 = nalUnits.find(n => n.type === 3);
+        const part4 = nalUnits.find(n => n.type === 4);
+
+        // Combine all parts into one frame
+        const parts = [part2, part3, part4].filter(Boolean).map(n => n.data);
+        const combined = Buffer.concat(parts);
+        console.log(`ch${channel} DP combined size:${combined.length}`);
+
+        if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
+            ch.ffmpeg.stdin.write(combined);
+        }
+        return;
+    }
+
+    // Normal frame
     if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
         ch.ffmpeg.stdin.write(h264Data);
     }
