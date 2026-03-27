@@ -4,8 +4,10 @@ const net  = require('net');
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
+require('dotenv').config();
 const { WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
+const { env } = require('process');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const CONFIG = {
