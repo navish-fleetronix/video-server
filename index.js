@@ -67,13 +67,19 @@ http.createServer((req, res) => {
 // ── FFmpeg for HLS ────────────────────────────────────────────────────────────
 function startFFmpeg(channel) {
     const ffmpeg = spawn('ffmpeg', [
+        '-fflags',       '+genpts+discardcorrupt',  // ← handle corrupt/missing frames
         '-f',            'h264',
         '-i',            'pipe:0',
-        '-c:v',          'copy',
+        '-c:v',          'libx264',
+        '-preset',       'ultrafast',
+        '-tune',         'zerolatency',
+        '-g',            '30',           // keyframe every 30 frames
+        '-sc_threshold', '0',
         '-f',            'hls',
         '-hls_time',     '1',
         '-hls_list_size','3',
-        '-hls_flags',    'delete_segments+append_list',
+        '-hls_flags',    'delete_segments+append_list+split_by_time',
+        '-hls_segment_type', 'mpegts',
         `./public/ch${channel}.m3u8`,
     ]);
     ffmpeg.stderr.on('data', d => console.log(`FFmpeg ch${channel}:`, d.toString().trim()));
@@ -99,22 +105,18 @@ function handleVideoFrame(h264Data, channel, dataType) {
 
     if (dataType === 0) {
         ch.gotIFrame = true;
-        console.log(`ch${channel} I_FRAME size:${h264Data.length}`);
+        console.log(`ch${channel} ✅ I_FRAME size:${h264Data.length}`);
     }
 
-    if (!ch.gotIFrame) return;
+    // ← Only write to FFmpeg starting from I_FRAME
+    if (!ch.gotIFrame) {
+        console.log(`ch${channel} waiting for I_FRAME...`);
+        return;
+    }
 
-    // Write to FFmpeg
     if (ch.ffmpeg && ch.ffmpeg.stdin.writable) {
         ch.ffmpeg.stdin.write(h264Data);
     }
-
-    // Send via WebSocket
-    const header  = Buffer.from([channel, dataType]);
-    const message = Buffer.concat([header, h264Data]);
-    wss.clients.forEach(client => {
-        if (client.readyState === 1) client.send(message, { binary: true });
-    });
 }
 
 // ── Reassemble subpackets ─────────────────────────────────────────────────────
