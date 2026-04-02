@@ -123,27 +123,54 @@
 
     // ── Show recordings in table ────────────────────────────────────────────
     function showRecordings(list) {
-        const tbody = document.getElementById('recordingList');
-        if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="color:#666">No recordings found</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = list.map((r, i) => `
-            <tr>
-                <td>CH${r.ch}</td>
-                <td>${r.startTime}</td>
-                <td>${r.endTime}</td>
-                <td>${(r.size / 1024).toFixed(1)} KB</td>
-                <td>
-                    <button class="btn" onclick="playRecording(${i})">▶ Play</button>
-                </td>
-            </tr>
-        `).join('');
-
-        // Store for playback
-        window._recordings = list;
+    const tbody = document.getElementById('recordingList');
+    if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="color:#666">No recordings found</td></tr>';
+        return;
     }
+
+    // Group by date
+    const grouped = {};
+    list.forEach((r, i) => {
+        const date = r.startTime.split(' ')[0]; // e.g. "2025-09-18"
+        if (!grouped[date]) grouped[date] = [];
+        grouped[date].push({ ...r, index: i });
+    });
+
+    // Build table grouped by day
+    let html = '';
+    Object.keys(grouped).sort().reverse().forEach(date => {
+        // Date header row
+        html += `
+            <tr>
+                <td colspan="5" style="background:#222; color:#00d4ff; 
+                    font-weight:bold; padding:10px;">
+                    📅 ${date}
+                </td>
+            </tr>`;
+
+        // Recordings for this day
+        grouped[date].forEach(r => {
+            const startHHMM = r.startTime.split(' ')[1];
+            const endHHMM   = r.endTime.split(' ')[1];
+            html += `
+                <tr>
+                    <td>CH${r.ch}</td>
+                    <td>${startHHMM}</td>
+                    <td>${endHHMM}</td>
+                    <td>${(r.size / 1024).toFixed(1)} KB</td>
+                    <td>
+                        <button class="btn" onclick="playRecording(${r.index})">
+                            ▶ Play
+                        </button>
+                    </td>
+                </tr>`;
+        });
+    });
+
+    tbody.innerHTML = html;
+    window._recordings = list;
+}
 
     // ── Play selected recording ─────────────────────────────────────────────
     function playRecording(index) {

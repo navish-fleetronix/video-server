@@ -752,10 +752,14 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 2));
 
-                        // ← NEW: Query recordings from last 1 hour
-                        const now   = new Date();
-                        const start = new Date(now - 48 * 60 * 60 * 1000); // 24 hours ago
-                        socket.write(buildQueryResourceList(phone, 0, start, now));
+                        const recBody = Buffer.alloc(23);
+                        recBody[0] = 0;            // all channels
+                        recBody.fill(0, 1,  7);    // start time = no filter
+                        recBody.fill(0, 7,  13);   // end time   = no filter
+                        recBody.fill(0, 13, 21);   // alarm flag = no filter
+                        recBody[21] = 2;           // video only
+                        recBody[22] = 1;           // main stream
+                        socket.write(buildFrame(0x9205, recBody, phone));
 
                     } else if (msgId === 0x1205) {
                         // ← NEW: Resource list response
