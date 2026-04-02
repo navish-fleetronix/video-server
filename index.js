@@ -747,23 +747,19 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
-                        // Auth → request live video
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 2));
 
-                        const recBody = Buffer.alloc(23);
-                        recBody[0] = 0;            // all channels
-                        recBody.fill(0, 1,  7);    // start time = no filter
-                        recBody.fill(0, 7,  13);   // end time   = no filter
-                        recBody.fill(0, 13, 21);   // alarm flag = no filter
-                        recBody[21] = 2;           // video only
-                        recBody[22] = 1;           // main stream
-                        socket.write(buildFrame(0x9205, recBody, phone));
-
+                        // Try specific date range
+                        const start = new Date('2025-01-01T00:00:00');
+                        const end   = new Date('2026-12-31T23:59:59');
+                        socket.write(buildQueryResourceList(phone, 0, start, end));
                     } else if (msgId === 0x1205) {
                         // ← NEW: Resource list response
                         socket.write(buildAck(phone, seq, msgId));
+                        console.log('Raw 1205 body hex:', body.toString('hex')); // ← ADD
+                        console.log('Body length:', body.length);                // ← ADD
                         handleResourceList(body, socket, phone);
 
                     } else {
