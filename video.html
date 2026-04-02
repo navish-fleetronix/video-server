@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html>
 <head>
     <title>Live Video</title>
@@ -28,5 +28,144 @@
         startPlayer('ch1', '/public/ch1.m3u8');
         startPlayer('ch2', '/public/ch2.m3u8');
     </script>
+</body>
+</html> -->
+
+
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vehicle Camera</title>
+    <style>
+        body { background: #111; color: #fff; font-family: Arial; padding: 20px; }
+        h3   { color: #00d4ff; }
+        video { width: 640px; display: block; margin: 10px 0; background: #000; }
+        .recordings { margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th    { background: #222; padding: 8px; text-align: left; color: #00d4ff; }
+        td    { padding: 8px; border-bottom: 1px solid #333; }
+        tr:hover { background: #1a1a1a; cursor: pointer; }
+        .btn  { background: #00d4ff; color: #000; border: none; padding: 6px 14px; 
+                border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn:hover { background: #00aacc; }
+        .live-badge { background: #f00; color: #fff; padding: 2px 8px; 
+                      border-radius: 4px; font-size: 11px; margin-left: 8px; }
+    </style>
+</head>
+<body>
+
+  <!-- Live Video -->
+  <h3>Channel 1 - Front <span class="live-badge">LIVE</span></h3>
+  <video id="ch1" autoplay muted controls></video>
+
+  <h3>Channel 2 - Rear <span class="live-badge">LIVE</span></h3>
+  <video id="ch2" autoplay muted controls></video>
+
+  <!-- Recordings -->
+  <div class="recordings">
+    <h3>📹 Saved Recordings</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Start Time</th>
+          <th>End Time</th>
+          <th>Size</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="recordingList">
+        <tr><td colspan="5" style="color:#666">Waiting for recordings...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Playback -->
+  <div id="playbackSection" style="display:none; margin-top:20px;">
+    <h3>▶ Playback</h3>
+    <video id="playback" controls style="width:640px; background:#000;"></video>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script>
+    // ── Start live streams ──────────────────────────────────────────────────
+    function startLive(videoId, src) {
+        const video = document.getElementById(videoId);
+        const hls   = new Hls({ lowLatencyMode: true });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+        hls.on(Hls.Events.ERROR, (e, d) => {
+            if (d.fatal) console.error(videoId, d);
+        });
+    }
+
+    startLive('ch1', '/public/ch1.m3u8');
+    startLive('ch2', '/public/ch2.m3u8');
+
+    // ── WebSocket for recordings list ───────────────────────────────────────
+    const ws = new WebSocket(`ws://${location.hostname}:8801`);
+
+    ws.onmessage = e => {
+        try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'recordings') {
+                showRecordings(msg.data);
+            }
+        } catch (_) {
+            // binary video data — ignore here
+        }
+    };
+
+    ws.onopen  = () => console.log('WS connected');
+    ws.onerror = e => console.error('WS error', e);
+
+    // ── Show recordings in table ────────────────────────────────────────────
+    function showRecordings(list) {
+        const tbody = document.getElementById('recordingList');
+        if (!list || list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="color:#666">No recordings found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = list.map((r, i) => `
+            <tr>
+                <td>CH${r.ch}</td>
+                <td>${r.startTime}</td>
+                <td>${r.endTime}</td>
+                <td>${(r.size / 1024).toFixed(1)} KB</td>
+                <td>
+                    <button class="btn" onclick="playRecording(${i})">▶ Play</button>
+                </td>
+            </tr>
+        `).join('');
+
+        // Store for playback
+        window._recordings = list;
+    }
+
+    // ── Play selected recording ─────────────────────────────────────────────
+    function playRecording(index) {
+        const rec = window._recordings[index];
+        console.log('Playing:', rec);
+
+        // Send playback request to server via WebSocket
+        ws.send(JSON.stringify({
+            type:      'playback_request',
+            channel:   rec.ch,
+            startTime: rec.startTime,
+            endTime:   rec.endTime,
+        }));
+
+        // Show playback section and load HLS
+        document.getElementById('playbackSection').style.display = 'block';
+        const video = document.getElementById('playback');
+        const hls   = new Hls();
+        hls.loadSource(`/public/ch${rec.ch}.m3u8`);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+    }
+  </script>
 </body>
 </html>
