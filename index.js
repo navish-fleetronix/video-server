@@ -754,7 +754,7 @@ const tcpServer = net.createServer(socket => {
 
                         // ← NEW: Query recordings from last 1 hour
                         const now   = new Date();
-                        const start = new Date(now - 24 * 60 * 60 * 1000); // 24 hours ago
+                        const start = new Date(now - 48 * 60 * 60 * 1000); // 24 hours ago
                         socket.write(buildQueryResourceList(phone, 0, start, now));
 
                     } else if (msgId === 0x1205) {
