@@ -382,7 +382,43 @@ const tcpServer = net.createServer(socket => {
                     } 
                     else if (msgId === 0x0200) {
                         socket.write(buildAck(phone, seq, msgId));
+                        // ── Save GPS data to file ─────────────────────────────────────────────
+                        let fileName = `gps_log_${new Date().toISOString().slice(0,10)}.txt`;
+                        const gpsLog = fs.createWriteStream(`./${fileName}`, { flags: 'a' });
 
+                        // Inside 0x0200 handler, after all parsing:
+                        const gpsRecord = {
+                            imei:          phone,           // device phone/IMEI
+                            datetime:      dt,
+                            latitude:      lat,
+                            longitude:     lon,
+                            speed_kmh:     speed,
+                            direction_deg: direction,
+                            elevation_m:   elevation,
+                            acc:           accOn ? 'ON' : 'OFF',
+                            located:       located ? 'YES' : 'NO',
+                            mileage:       locationData.mileage       || '--',
+                            voltage:       locationData.voltage       || '--',
+                            satellites:    locationData.satellites    || '--',
+                            signal:        locationData.signalStrength|| '--',
+                            sensor_speed:  locationData.sensorSpeed   || '--',
+                            oil_circuit:   !!(statusBits & (1 << 10)) ? 'CUT' : 'NORMAL',
+                            vehicle_circuit: !!(statusBits & (1 << 11)) ? 'CUT' : 'NORMAL',
+                            door:          !!(statusBits & (1 << 13)) ? 'OPEN' : 'CLOSED',
+                            alarms:        alarmFlags !== 0 ? [
+                                (alarmFlags & (1<<0)) ? 'EMERGENCY'   : null,
+                                (alarmFlags & (1<<1)) ? 'OVERSPEED'   : null,
+                                (alarmFlags & (1<<4)) ? 'GNSS_FAULT'  : null,
+                                (alarmFlags & (1<<5)) ? 'ANTENNA_CUT' : null,
+                                (alarmFlags & (1<<7)) ? 'LOW_VOLTAGE' : null,
+                                (alarmFlags & (1<<8)) ? 'POWER_OFF'   : null,
+                            ].filter(Boolean).join('|') : 'NONE',
+                        };
+
+                        // Write to file
+                        const line = Object.values(gpsRecord).join(',') + '\n';
+                        gpsLog.write(line);
+                        console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
                         // Parse location
                         const alarmFlags = body.readUInt32BE(0);
                         const statusBits = body.readUInt32BE(4);
