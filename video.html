@@ -55,7 +55,8 @@
 
         startPlayer('ch1', '/public/ch1.m3u8');
         startPlayer('ch2', '/public/ch2.m3u8');
-
+// ── WebSocket ─────────────────────────────────────────────────────────
+    const ws = new WebSocket(`ws://20.244.41.46:8801`);
         ws.onmessage = e => {
     try {
         const msg = JSON.parse(e.data);
