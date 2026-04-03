@@ -430,6 +430,12 @@ const tcpServer = net.createServer(socket => {
                         };
 
                         console.log(`[GPS] ${phone} lat=${lat} lon=${lon} speed=${speed}km/h dir=${direction}° dt=${dt}`);
+                        // Send to browser
+                        wss.clients.forEach(client => {
+                            if (client.readyState === 1) {
+                                client.send(JSON.stringify(locationData));
+                            }
+                        });
 // ── Save GPS data to file ─────────────────────────────────────────────
                         let fileName = `gps_log_${new Date().toISOString().slice(0,10)}.txt`;
                         const gpsLog = fs.createWriteStream(`./${fileName}`, { flags: 'a' });
@@ -467,12 +473,7 @@ const tcpServer = net.createServer(socket => {
                         const line = Object.values(gpsRecord).join(',') + '\n';
                         gpsLog.write(line);
                         console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
-                        // Send to browser
-                        wss.clients.forEach(client => {
-                            if (client.readyState === 1) {
-                                client.send(JSON.stringify(locationData));
-                            }
-                        });
+                        
                     }
                     else {
                         socket.write(buildAck(phone, seq, msgId));
