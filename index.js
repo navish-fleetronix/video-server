@@ -290,23 +290,27 @@ function parseAdditionalInfo(buf) {
     while (i < buf.length - 2) {
         const id  = buf[i];
         const len = buf[i+1];
+
+        // ← ADD THIS CHECK
+        if (i + 2 + len > buf.length) break;
+
         const val = buf.slice(i+2, i+2+len);
 
         switch(id) {
-            case 0x01: // Mileage
-                result.mileage = val.readUInt32BE(0) / 10 + ' km';
+            case 0x01:
+                if (val.length >= 4) result.mileage = val.readUInt32BE(0) / 10 + ' km';
                 break;
-            case 0x03: // Speed from sensor
-                result.sensorSpeed = val.readUInt16BE(0) / 10 + ' km/h';
+            case 0x03:
+                if (val.length >= 2) result.sensorSpeed = val.readUInt16BE(0) / 10 + ' km/h';
                 break;
-            case 0x25: // Vehicle voltage (some devices)
-                result.voltage = val.readUInt16BE(0) / 10 + ' V';
+            case 0x25:
+                if (val.length >= 2) result.voltage = val.readUInt16BE(0) / 10 + ' V';
                 break;
-            case 0x30: // Signal strength
-                result.signalStrength = val[0];
+            case 0x30:
+                if (val.length >= 1) result.signalStrength = val[0];
                 break;
-            case 0x31: // GNSS satellites
-                result.satellites = val[0];
+            case 0x31:
+                if (val.length >= 1) result.satellites = val[0];
                 break;
         }
         i += 2 + len;
