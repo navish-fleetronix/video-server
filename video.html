@@ -195,13 +195,19 @@
         attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
-    // Vehicle marker
     const truckIcon = L.divIcon({
-        html: '<H1>🚛 VEHICLE</H1>',
-        iconSize:   [30, 30],
-        iconAnchor: [15, 15],
-        className:  ''
-    });
+    html: `<div style="
+        background: #00d4ff;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 3px solid #fff;
+        box-shadow: 0 0 8px #00d4ff;
+    "></div>`,
+    iconSize:   [20, 20],
+    iconAnchor: [10, 10],
+    className:  ''
+});
 
     let marker   = null;
     let polyline = null;
