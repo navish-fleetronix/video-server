@@ -5,6 +5,14 @@
     <style>
         body { background: #000; color: #fff; font-family: Arial; text-align: center; }
         video { width: 640px; margin: 10px; }
+.info-box {
+    background: #222;
+    padding: 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    border-left: 3px solid #00d4ff;
+}
+
     </style>
 </head>
 <body>
@@ -13,6 +21,26 @@
     <video id="ch1" autoplay muted controls></video>
     <h3>Channel 2 - Rear</h3>
     <video id="ch2" autoplay muted controls></video>
+
+<div style="margin-top:30px;">
+    <h3>📍 GPS Tracker</h3>
+    <div id="gpsInfo" style="background:#1a1a1a; padding:15px; border-radius:8px; 
+         display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+        <div class="info-box" id="info-lat">Latitude: --</div>
+        <div class="info-box" id="info-lon">Longitude: --</div>
+        <div class="info-box" id="info-speed">Speed: --</div>
+        <div class="info-box" id="info-dir">Direction: --</div>
+        <div class="info-box" id="info-elev">Elevation: --</div>
+        <div class="info-box" id="info-dt">DateTime: --</div>
+        <div class="info-box" id="info-acc">ACC: --</div>
+        <div class="info-box" id="info-located">Located: --</div>
+        <div class="info-box" id="info-mileage">Mileage: --</div>
+        <div class="info-box" id="info-voltage">Voltage: --</div>
+        <div class="info-box" id="info-satellites">Satellites: --</div>
+        <div class="info-box" id="info-alarms">Alarms: --</div>
+    </div>
+</div>
+    
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
@@ -27,6 +55,31 @@
 
         startPlayer('ch1', '/public/ch1.m3u8');
         startPlayer('ch2', '/public/ch2.m3u8');
+
+        ws.onmessage = e => {
+    try {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === 'recordings') {
+            showRecordings(msg.data);
+        }
+
+        if (msg.type === 'location') {
+            document.getElementById('info-lat').textContent       = `Latitude: ${msg.lat.toFixed(6)}°`;
+            document.getElementById('info-lon').textContent       = `Longitude: ${msg.lon.toFixed(6)}°`;
+            document.getElementById('info-speed').textContent     = `Speed: ${msg.speed} km/h`;
+            document.getElementById('info-dir').textContent       = `Direction: ${msg.direction}°`;
+            document.getElementById('info-elev').textContent      = `Elevation: ${msg.elevation} m`;
+            document.getElementById('info-dt').textContent        = `DateTime: ${msg.datetime}`;
+            document.getElementById('info-acc').textContent       = `ACC: ${msg.accOn ? '🟢 ON' : '🔴 OFF'}`;
+            document.getElementById('info-located').textContent   = `Located: ${msg.located ? '✅ Yes' : '❌ No'}`;
+            document.getElementById('info-mileage').textContent   = `Mileage: ${msg.mileage || '--'}`;
+            document.getElementById('info-voltage').textContent   = `Voltage: ${msg.voltage || '--'}`;
+            document.getElementById('info-satellites').textContent= `Satellites: ${msg.satellites || '--'}`;
+            document.getElementById('info-alarms').textContent    = `Alarms: ${msg.alarms.length ? msg.alarms.join(', ') : 'None'}`;
+        }
+    } catch (_) {}
+};
     </script>
 </body>
 </html>

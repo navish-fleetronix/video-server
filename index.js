@@ -284,6 +284,36 @@ function buildVideoRequest(phone, serverIp, serverPort, channel) {
     return buildFrame(0x9101, body, phone);
 }
 
+function parseAdditionalInfo(buf) {
+    const result = {};
+    let i = 0;
+    while (i < buf.length - 2) {
+        const id  = buf[i];
+        const len = buf[i+1];
+        const val = buf.slice(i+2, i+2+len);
+
+        switch(id) {
+            case 0x01: // Mileage
+                result.mileage = val.readUInt32BE(0) / 10 + ' km';
+                break;
+            case 0x03: // Speed from sensor
+                result.sensorSpeed = val.readUInt16BE(0) / 10 + ' km/h';
+                break;
+            case 0x25: // Vehicle voltage (some devices)
+                result.voltage = val.readUInt16BE(0) / 10 + ' V';
+                break;
+            case 0x30: // Signal strength
+                result.signalStrength = val[0];
+                break;
+            case 0x31: // GNSS satellites
+                result.satellites = val[0];
+                break;
+        }
+        i += 2 + len;
+    }
+    return result;
+}
+
 // ── TCP server ────────────────────────────────────────────────────────────────
 const tcpServer = net.createServer(socket => {
     const remote = `${socket.remoteAddress}:${socket.remotePort}`;
@@ -345,7 +375,66 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 2));
 
-                    } else {
+                    } 
+                    else if (msgId === 0x0200) {
+                        socket.write(buildAck(phone, seq, msgId));
+
+                        // Parse location
+                        const alarmFlags = body.readUInt32BE(0);
+                        const statusBits = body.readUInt32BE(4);
+                        const latRaw     = body.readUInt32BE(8);
+                        const lonRaw     = body.readUInt32BE(12);
+                        const elevation  = body.readUInt16BE(16);
+                        const speed      = body.readUInt16BE(18) / 10;
+                        const direction  = body.readUInt16BE(20);
+
+                        const south   = !!(statusBits & (1 << 2));
+                        const west    = !!(statusBits & (1 << 3));
+                        const lat     = latRaw  / 1e6 * (south ? -1 : 1);
+                        const lon     = lonRaw  / 1e6 * (west  ? -1 : 1);
+                        const accOn   = !!(statusBits & (1 << 0));
+                        const located = !!(statusBits & (1 << 1));
+
+                        // Parse BCD time
+                        const timeOffset = 21;
+                        const bcd = b => ((b >> 4) * 10 + (b & 0x0F));
+                        const dt  = `20${bcd(body[timeOffset])}-${bcd(body[timeOffset+1])}-${bcd(body[timeOffset+2])} ${bcd(body[timeOffset+3])}:${bcd(body[timeOffset+4])}:${bcd(body[timeOffset+5])}`;
+
+                        // Parse alarm flags
+                        const alarms = [];
+                        if (alarmFlags & (1 << 0)) alarms.push('Emergency');
+                        if (alarmFlags & (1 << 1)) alarms.push('Overspeed');
+                        if (alarmFlags & (1 << 4)) alarms.push('GNSS Fault');
+                        if (alarmFlags & (1 << 5)) alarms.push('GNSS Antenna Cut');
+                        if (alarmFlags & (1 << 7)) alarms.push('Low Voltage');
+                        if (alarmFlags & (1 << 8)) alarms.push('Power Off');
+
+                        const locationData = {
+                            type:      'location',
+                            phone,
+                            lat,
+                            lon,
+                            speed,
+                            direction,
+                            elevation,
+                            datetime:  dt,
+                            accOn,
+                            located,
+                            alarms,
+                            // Parse additional info items
+                            ...parseAdditionalInfo(body.slice(27))
+                        };
+
+                        console.log(`[GPS] ${phone} lat=${lat} lon=${lon} speed=${speed}km/h dir=${direction}° dt=${dt}`);
+
+                        // Send to browser
+                        wss.clients.forEach(client => {
+                            if (client.readyState === 1) {
+                                client.send(JSON.stringify(locationData));
+                            }
+                        });
+                    }
+                    else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
 
