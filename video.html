@@ -129,7 +129,7 @@
   </div>
 
   <!-- Map -->
-  <h3>📍 Vehicle Location</h3>
+  <h3>Vehicle Location</h3>
   <div id="map"></div>
 
   <!-- GPS Info -->
@@ -169,7 +169,7 @@
 
   <!-- Playback -->
   <div id="playbackSection" style="display:none; margin-top:20px;">
-    <h3>▶ Playback</h3>
+    <h3>Playback</h3>
     <video id="playback" controls style="width:640px; background:#000;"></video>
   </div>
 
@@ -262,14 +262,14 @@
                 updateMap(msg.lat, msg.lon, msg.speed, msg.direction);
 
                 // Update info boxes
-                document.getElementById('info-lat').textContent        = `Latitude: ${msg.lat.toFixed(6)}°`;
-                document.getElementById('info-lon').textContent        = `Longitude: ${msg.lon.toFixed(6)}°`;
+                document.getElementById('info-lat').textContent        = `Latitude: ${msg.lat.toFixed(6)}`;
+                document.getElementById('info-lon').textContent        = `Longitude: ${msg.lon.toFixed(6)}`;
                 document.getElementById('info-speed').textContent      = `Speed: ${msg.speed} km/h`;
                 document.getElementById('info-dir').textContent        = `Direction: ${msg.direction}°`;
                 document.getElementById('info-elev').textContent       = `Elevation: ${msg.elevation} m`;
                 document.getElementById('info-dt').textContent         = `DateTime: ${msg.datetime}`;
-                document.getElementById('info-acc').textContent        = `ACC: ${msg.accOn ? '🟢 ON' : '🔴 OFF'}`;
-                document.getElementById('info-located').textContent    = `Located: ${msg.located ? '✅ Yes' : '❌ No'}`;
+                document.getElementById('info-acc').textContent        = `ACC: ${msg.accOn ? 'ON' : 'OFF'}`;
+                document.getElementById('info-located').textContent    = `Located: ${msg.located ? 'Yes' : 'No'}`;
                 document.getElementById('info-mileage').textContent    = `Mileage: ${msg.mileage || '--'}`;
                 document.getElementById('info-voltage').textContent    = `Voltage: ${msg.voltage || '--'}`;
                 document.getElementById('info-satellites').textContent = `Satellites: ${msg.satellites || '--'}`;
