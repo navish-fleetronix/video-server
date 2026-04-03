@@ -362,7 +362,7 @@ const tcpServer = net.createServer(socket => {
                     const msgId = unescaped.readUInt16BE(0);
                     phone       = unescaped.slice(4, 10).map(b => b.toString(16).padStart(2,'0')).join('');
                     const seq   = unescaped.readUInt16BE(10);
-
+                    const body  = unescaped.slice(12);
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
