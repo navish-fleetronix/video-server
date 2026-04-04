@@ -176,74 +176,73 @@
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
+    // ── Live streams ──────────────────────────────────────────────────────
+    function startLive(videoId, src) {
+        const video = document.getElementById(videoId);
+        const hls   = new Hls({ lowLatencyMode: true });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+    }
+
+    startLive('ch1', '/public/ch1.m3u8');
+    startLive('ch2', '/public/ch2.m3u8');
+
     // ── Leaflet Map ───────────────────────────────────────────────────────
-const map = L.map('map').setView([20, 0], 2);
+    const map = L.map('map').setView([20, 0], 2);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors'
-}).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
 
-// Bus icon
-// Bus icon using SVG
-const busIcon = L.divIcon({
-    html: `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24">
-        <rect x="2" y="4" width="20" height="14" rx="2" fill="#00d4ff" stroke="#fff" stroke-width="1"/>
-        <rect x="4" y="7" width="5" height="4" rx="1" fill="#fff" opacity="0.8"/>
-        <rect x="10" y="7" width="5" height="4" rx="1" fill="#fff" opacity="0.8"/>
-        <rect x="2" y="14" width="20" height="2" fill="#0099bb"/>
-        <circle cx="6" cy="19" r="2.5" fill="#333" stroke="#fff" stroke-width="1"/>
-        <circle cx="18" cy="19" r="2.5" fill="#333" stroke="#fff" stroke-width="1"/>
-        <rect x="9" y="4" width="6" height="2" rx="1" fill="#0099bb"/>
-    </svg>`,
-    iconSize:   [36, 36],
-    iconAnchor: [18, 18],
+    const truckIcon = L.divIcon({
+    html: `<div style="
+        background: #00d4ff;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 3px solid #fff;
+        box-shadow: 0 0 8px #00d4ff;
+    "></div>`,
+    iconSize:   [20, 20],
+    iconAnchor: [10, 10],
     className:  ''
 });
 
-let marker   = null;
-let trail    = [];
-const dots   = []; // store dot markers
+    let marker   = null;
+    let polyline = null;
+    let trail    = []; // store last 50 positions
 
-function updateMap(lat, lon, speed, direction) {
-    const pos = [lat, lon];
+    function updateMap(lat, lon, speed, direction) {
+        const pos = [lat, lon];
 
-    if (!marker) {
-        marker = L.marker(pos, { icon: busIcon }).addTo(map);
-        map.setView(pos, 15);
-    } else {
-        marker.setLatLng(pos);
+        if (!marker) {
+            // First position — create marker and center map
+            marker = L.marker(pos, { icon: truckIcon }).addTo(map);
+            map.setView(pos, 15);
+        } else {
+            marker.setLatLng(pos);
+        }
+
+        // Update popup
+        marker.bindPopup(`
+            <b>Vehicle</b><br>
+            Lat: ${lat.toFixed(6)}<br>
+            Lon: ${lon.toFixed(6)}<br>
+            Speed: ${speed} km/h<br>
+            Direction: ${direction}°
+        `);
+
+        // Draw trail (last 50 points)
+        trail.push(pos);
+        if (trail.length > 50) trail.shift();
+
+        if (polyline) map.removeLayer(polyline);
+        polyline = L.polyline(trail, { color: '#00d4ff', weight: 2 }).addTo(map);
+
+        // Keep map centered on vehicle
+        map.panTo(pos);
     }
-
-    marker.bindPopup(`
-        <b>🚌 Vehicle</b><br>
-        Lat: ${lat.toFixed(6)}<br>
-        Lon: ${lon.toFixed(6)}<br>
-        Speed: ${speed} km/h<br>
-        Direction: ${direction}°
-    `);
-
-    // Add small black dot at each position
-    const dot = L.circleMarker(pos, {
-        radius:      3,
-        color:       '#000',
-        fillColor:   '#000',
-        fillOpacity: 1,
-        weight:      1,
-    }).addTo(map);
-    dots.push(dot);
-
-    // Keep only last 100 dots
-    if (dots.length > 100) {
-        const old = dots.shift();
-        map.removeLayer(old);
-    }
-
-    // Keep trail line
-    trail.push(pos);
-    if (trail.length > 100) trail.shift();
-
-    map.panTo(pos);
-}
 
     // ── WebSocket ─────────────────────────────────────────────────────────
     const ws = new WebSocket(`ws://${location.hostname}:8801`);
