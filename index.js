@@ -370,14 +370,13 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        const imei    = body.slice(17, 24).toString('ascii').trim(); // Terminal ID
-                        const model   = body.slice(9, 17).toString('ascii').trim();
-                        const plate   = body.slice(25).toString('gbk');
-                        
+                        const imei  = body.slice(17, 24).toString('ascii').trim();
+                        const model = body.slice(9, 17).toString('ascii').trim();
+                        const plate = body.slice(25).toString('latin1').trim(); // ← change gbk to latin1
+
                         deviceInfo[phone] = { imei, model, plate };
                         console.log(`[REGISTER] phone:${phone} imei:${imei} model:${model} plate:${plate}`);
-    
-                        // Registration
+
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
