@@ -322,7 +322,7 @@ function parseAdditionalInfo(buf) {
 const tcpServer = net.createServer(socket => {
     const remote = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`Device connected: ${remote}`);
-    const deviceInfo = {}; // store per device
+
     let buffer = Buffer.alloc(0);
     let phone  = null;
 
@@ -370,13 +370,7 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        const imei  = body.slice(17, 24).toString('ascii').trim();
-                        const model = body.slice(9, 17).toString('ascii').trim();
-                        const plate = body.slice(25).toString('latin1').trim(); // ← change gbk to latin1
-
-                        deviceInfo[phone] = { imei, model, plate };
-                        console.log(`[REGISTER] phone:${phone} imei:${imei} model:${model} plate:${plate}`);
-
+                        // Registration
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
@@ -406,16 +400,9 @@ const tcpServer = net.createServer(socket => {
                         const located = !!(statusBits & (1 << 1));
 
                         // Parse BCD time
-                        // Replace your existing BCD time parsing with this:
-                        const bcd = b => ((b >> 4) * 10 + (b & 0x0F));
                         const timeOffset = 21;
-                        const yy = bcd(body[timeOffset]);
-                        const mo = bcd(body[timeOffset+1]);
-                        const dd = bcd(body[timeOffset+2]);
-                        const hh = bcd(body[timeOffset+3]);
-                        const mm = bcd(body[timeOffset+4]);
-                        const ss = bcd(body[timeOffset+5]);
-                        const dt = `20${String(yy).padStart(2,'0')}-${String(mo).padStart(2,'0')}-${String(dd).padStart(2,'0')} ${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+                        const bcd = b => ((b >> 4) * 10 + (b & 0x0F));
+                        const dt  = `20${bcd(body[timeOffset])}-${bcd(body[timeOffset+1])}-${bcd(body[timeOffset+2])} ${bcd(body[timeOffset+3])}:${bcd(body[timeOffset+4])}:${bcd(body[timeOffset+5])}`;
 
                         // Parse alarm flags
                         const alarms = [];
@@ -453,29 +440,25 @@ const tcpServer = net.createServer(socket => {
                         let fileName = `gps_log_${new Date().toISOString().slice(0,10)}.txt`;
                         const gpsLog = fs.createWriteStream(`./${fileName}`, { flags: 'a' });
 
-                        const info = deviceInfo[phone] || {};
-
+                        // Inside 0x0200 handler, after all parsing:
                         const gpsRecord = {
-                            phone:         phone,
-                            imei:          info.imei  || phone,   // ← real IMEI
-                            model:         info.model || '--',
-                            plate:         info.plate || '--',
+                            imei:          phone,           // device phone/IMEI
                             datetime:      dt,
                             latitude:      lat,
                             longitude:     lon,
                             speed_kmh:     speed,
                             direction_deg: direction,
                             elevation_m:   elevation,
-                            acc:           accOn   ? 'ON'  : 'OFF',
+                            acc:           accOn ? 'ON' : 'OFF',
                             located:       located ? 'YES' : 'NO',
-                            mileage:       locationData.mileage        || '--',
-                            voltage:       locationData.voltage        || '--',
-                            satellites:    locationData.satellites     || '--',
-                            signal:        locationData.signalStrength || '--',
-                            sensor_speed:  locationData.sensorSpeed    || '--',
-                            oil_circuit:   !!(statusBits & (1<<10)) ? 'CUT'  : 'NORMAL',
-                            vehicle_circuit: !!(statusBits & (1<<11)) ? 'CUT' : 'NORMAL',
-                            door:          !!(statusBits & (1<<13)) ? 'OPEN'  : 'CLOSED',
+                            mileage:       locationData.mileage       || '--',
+                            voltage:       locationData.voltage       || '--',
+                            satellites:    locationData.satellites    || '--',
+                            signal:        locationData.signalStrength|| '--',
+                            sensor_speed:  locationData.sensorSpeed   || '--',
+                            oil_circuit:   !!(statusBits & (1 << 10)) ? 'CUT' : 'NORMAL',
+                            vehicle_circuit: !!(statusBits & (1 << 11)) ? 'CUT' : 'NORMAL',
+                            door:          !!(statusBits & (1 << 13)) ? 'OPEN' : 'CLOSED',
                             alarms:        alarmFlags !== 0 ? [
                                 (alarmFlags & (1<<0)) ? 'EMERGENCY'   : null,
                                 (alarmFlags & (1<<1)) ? 'OVERSPEED'   : null,
