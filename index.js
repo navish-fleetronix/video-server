@@ -370,16 +370,16 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        // IMEI from phone BCD field in header
-                        // phone = "8466234738" but real IMEI = "866846062347389"
-                        // It's stored as BCD[6] = 08 46 06 23 47 38 → strip leading 0 → 8466234738
-                        // Real IMEI comes from Terminal ID field in body (bytes 17-24)
-                        console.log('Full unescaped hex:', unescaped.toString('hex'));
+                        // IMEI is the phone number from message header decoded differently
+                        const imei  = unescaped.slice(4, 10)
+                                        .map(b => b.toString(16).padStart(2,'0'))
+                                        .join('')
+                        
                         const model = body.slice(9, 17).toString('ascii').trim();
                         const plate = body.slice(25).toString('latin1').trim();
 
-                        deviceInfo[phone] = { imei: phone, model, plate };
-                        console.log(`[REGISTER] phone:${phone} model:${model} plate:${plate}`);
+                        deviceInfo[phone] = { imei, model, plate };
+                        console.log(`[REGISTER] phone:${phone} imei:${imei} model:${model} plate:${plate}`);
 
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
                     } else if (msgId === 0x0102) {
@@ -390,25 +390,6 @@ const tcpServer = net.createServer(socket => {
 
                     } 
                     else if (msgId === 0x0200) {
-
-                        // Log additional info raw hex
-                       const additionalInfo = body.slice(27);
-                        console.log('Additional info hex:', additionalInfo.toString('hex'));
-
-                        let i = 0;
-                            while (i < additionalInfo.length - 2) {
-                                const id  = additionalInfo[i];
-                                const len = additionalInfo[i+1];
-
-                                // Skip zero padding
-                                if (id === 0x00) { i++; continue; }
-                                if (i + 2 + len > additionalInfo.length) break;
-
-                                const val = additionalInfo.slice(i+2, i+2+len);
-                                console.log(`  ID:0x${id.toString(16).padStart(2,'0')} len:${len} val:${val.toString('hex')} ascii:${val.toString('ascii')} decimal:${len===1?val[0]:len===2?val.readUInt16BE(0):len===4?val.readUInt32BE(0):'--'}`);
-                                i += 2 + len;
-                            }
-
                         socket.write(buildAck(phone, seq, msgId));
                         
                         // Parse location
@@ -515,12 +496,7 @@ const tcpServer = net.createServer(socket => {
                         gpsLog.write(line);
                         console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
                         
-                    } else if (msgId === 0x0900) {
-                    console.log('Passthrough type:', body[0].toString(16));
-                    console.log('Passthrough data:', body.slice(1).toString('hex'));
-                    console.log('Passthrough ascii:', body.slice(1).toString('ascii'));
-                    socket.write(buildAck(phone, seq, msgId));
-                }
+                    }
                     else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
