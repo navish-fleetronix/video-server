@@ -396,14 +396,18 @@ const tcpServer = net.createServer(socket => {
                         console.log('Additional info hex:', additionalInfo.toString('hex'));
 
                         let i = 0;
-                        while (i < additionalInfo.length - 2) {
-                            const id  = additionalInfo[i];
-                            const len = additionalInfo[i+1];
-                            if (i + 2 + len > additionalInfo.length) break;
-                            const val = additionalInfo.slice(i+2, i+2+len);
-                            console.log(`  ID:0x${id.toString(16).padStart(2,'0')} len:${len} val:${val.toString('hex')} ascii:${val.toString('ascii')}`);
-                            i += 2 + len;
-                        }
+                            while (i < additionalInfo.length - 2) {
+                                const id  = additionalInfo[i];
+                                const len = additionalInfo[i+1];
+
+                                // Skip zero padding
+                                if (id === 0x00) { i++; continue; }
+                                if (i + 2 + len > additionalInfo.length) break;
+
+                                const val = additionalInfo.slice(i+2, i+2+len);
+                                console.log(`  ID:0x${id.toString(16).padStart(2,'0')} len:${len} val:${val.toString('hex')} ascii:${val.toString('ascii')} decimal:${len===1?val[0]:len===2?val.readUInt16BE(0):len===4?val.readUInt32BE(0):'--'}`);
+                                i += 2 + len;
+                            }
 
                         socket.write(buildAck(phone, seq, msgId));
                         
