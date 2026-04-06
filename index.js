@@ -392,9 +392,18 @@ const tcpServer = net.createServer(socket => {
                     else if (msgId === 0x0200) {
 
                         // Log additional info raw hex
-                        const additionalInfo = body.slice(27);
+                       const additionalInfo = body.slice(27);
                         console.log('Additional info hex:', additionalInfo.toString('hex'));
-                        console.log('Additional info length:', additionalInfo.length);
+
+                        let i = 0;
+                        while (i < additionalInfo.length - 2) {
+                            const id  = additionalInfo[i];
+                            const len = additionalInfo[i+1];
+                            if (i + 2 + len > additionalInfo.length) break;
+                            const val = additionalInfo.slice(i+2, i+2+len);
+                            console.log(`  ID:0x${id.toString(16).padStart(2,'0')} len:${len} val:${val.toString('hex')} ascii:${val.toString('ascii')}`);
+                            i += 2 + len;
+                        }
 
                         socket.write(buildAck(phone, seq, msgId));
                         
