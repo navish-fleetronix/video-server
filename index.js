@@ -377,17 +377,6 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        // IMEI is the phone number from message header decoded differently
-                        const imei  = unescaped.slice(4, 10)
-                                        .map(b => b.toString(16).padStart(2,'0'))
-                                        .join('')
-                        
-                        const model = body.slice(9, 17).toString('ascii').trim();
-                        const plate = body.slice(25).toString('latin1').trim();
-
-                        deviceInfo[phone] = { imei, model, plate };
-                        console.log(`[REGISTER] phone:${phone} imei:${imei} model:${model} plate:${plate}`);
-
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
                     } else if (msgId === 0x0102) {
                         // Auth → request video
@@ -469,7 +458,6 @@ const tcpServer = net.createServer(socket => {
 
                         const gpsRecord = {
                             phone:         phone,
-                            imei:          info.imei  || phone,   // ← real IMEI
                             model:         info.model || '--',
                             plate:         info.plate || '--',
                             datetime:      dt,
@@ -501,7 +489,7 @@ const tcpServer = net.createServer(socket => {
                         // Write to file
                         const line = Object.values(gpsRecord).join(',') + '\n';
                         gpsLog.write(line);
-                        console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
+                        //console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
                         
                     }
                     else {
