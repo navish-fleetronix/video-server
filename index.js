@@ -364,7 +364,14 @@ const tcpServer = net.createServer(socket => {
                     if (unescaped.length < 12) { offset = end + 1; continue; }
 
                     const msgId = unescaped.readUInt16BE(0);
-                    phone       = unescaped.slice(4, 10).map(b => b.toString(16).padStart(2,'0')).join('');
+                    phone = unescaped.slice(4, 10)
+                    .map(b => {
+                        const high = (b >> 4) & 0x0F;
+                        const low  =  b       & 0x0F;
+                        return `${high}${low}`;
+                    })
+                    .join('')
+                    .replace(/^0+/, '');
                     const seq   = unescaped.readUInt16BE(10);
                     const body  = unescaped.slice(12);
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
