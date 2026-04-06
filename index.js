@@ -374,22 +374,12 @@ const tcpServer = net.createServer(socket => {
                         // phone = "8466234738" but real IMEI = "866846062347389"
                         // It's stored as BCD[6] = 08 46 06 23 47 38 → strip leading 0 → 8466234738
                         // Real IMEI comes from Terminal ID field in body (bytes 17-24)
-                        const termIdRaw = body.slice(17, 24);
-                        console.log('termId raw hex:', termIdRaw.toString('hex'));
-                        console.log('termId ascii:', termIdRaw.toString('ascii'));
-
-                        // Try reading as BCD
-                        const imeiBcd = Array.from(termIdRaw)
-                            .map(b => b.toString(16).padStart(2,'0'))
-                            .join('')
-                            .replace(/^0+/, '');
-                        console.log('imei as BCD:', imeiBcd);
-
+                        console.log('Full unescaped hex:', unescaped.toString('hex'));
                         const model = body.slice(9, 17).toString('ascii').trim();
                         const plate = body.slice(25).toString('latin1').trim();
 
-                        deviceInfo[phone] = { imei: imeiBcd || phone, model, plate };
-                        console.log(`[REGISTER] phone:${phone} imei:${imeiBcd} model:${model} plate:${plate}`);
+                        deviceInfo[phone] = { imei: phone, model, plate };
+                        console.log(`[REGISTER] phone:${phone} model:${model} plate:${plate}`);
 
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
                     } else if (msgId === 0x0102) {
