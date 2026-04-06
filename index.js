@@ -390,6 +390,12 @@ const tcpServer = net.createServer(socket => {
 
                     } 
                     else if (msgId === 0x0200) {
+
+                        // Log additional info raw hex
+                        const additionalInfo = body.slice(27);
+                        console.log('Additional info hex:', additionalInfo.toString('hex'));
+                        console.log('Additional info length:', additionalInfo.length);
+
                         socket.write(buildAck(phone, seq, msgId));
                         
                         // Parse location
@@ -496,7 +502,12 @@ const tcpServer = net.createServer(socket => {
                         gpsLog.write(line);
                         console.log(`[GPS LOG] ${gpsRecord.imei} ${gpsRecord.datetime} lat=${gpsRecord.latitude} lon=${gpsRecord.longitude}`);
                         
-                    }
+                    } else if (msgId === 0x0900) {
+                    console.log('Passthrough type:', body[0].toString(16));
+                    console.log('Passthrough data:', body.slice(1).toString('hex'));
+                    console.log('Passthrough ascii:', body.slice(1).toString('ascii'));
+                    socket.write(buildAck(phone, seq, msgId));
+                }
                     else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
