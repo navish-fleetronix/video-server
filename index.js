@@ -370,19 +370,26 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        console.log('0x0100 body hex:', body.toString('hex')); // ← ADD
-                        console.log('0x0100 body length:', body.length);       // ← ADD
+                        // IMEI from phone BCD field in header
+                        // phone = "8466234738" but real IMEI = "866846062347389"
+                        // It's stored as BCD[6] = 08 46 06 23 47 38 → strip leading 0 → 8466234738
+                        // Real IMEI comes from Terminal ID field in body (bytes 17-24)
+                        const termIdRaw = body.slice(17, 24);
+                        console.log('termId raw hex:', termIdRaw.toString('hex'));
+                        console.log('termId ascii:', termIdRaw.toString('ascii'));
 
-                        const imei  = unescaped.slice(4, 10)
-                                        .map(b => b.toString(16).padStart(2,'0'))
-                                        .join('')
-                                        .replace(/^0+/, '');
-                        
+                        // Try reading as BCD
+                        const imeiBcd = Array.from(termIdRaw)
+                            .map(b => b.toString(16).padStart(2,'0'))
+                            .join('')
+                            .replace(/^0+/, '');
+                        console.log('imei as BCD:', imeiBcd);
+
                         const model = body.slice(9, 17).toString('ascii').trim();
                         const plate = body.slice(25).toString('latin1').trim();
 
-                        deviceInfo[phone] = { imei, model, plate };
-                        console.log(`[REGISTER] phone:${phone} imei:${imei} model:${model} plate:${plate}`);
+                        deviceInfo[phone] = { imei: imeiBcd || phone, model, plate };
+                        console.log(`[REGISTER] phone:${phone} imei:${imeiBcd} model:${model} plate:${plate}`);
 
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
                     } else if (msgId === 0x0102) {
