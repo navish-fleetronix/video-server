@@ -370,11 +370,13 @@ const tcpServer = net.createServer(socket => {
                     console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
 
                     if (msgId === 0x0100) {
-                        // IMEI is the phone number from message header decoded differently
+                        console.log('0x0100 body hex:', body.toString('hex')); // ← ADD
+                        console.log('0x0100 body length:', body.length);       // ← ADD
+
                         const imei  = unescaped.slice(4, 10)
                                         .map(b => b.toString(16).padStart(2,'0'))
                                         .join('')
-                                        .replace(/^0+/, ''); // remove leading zeros → 866846062347389
+                                        .replace(/^0+/, '');
                         
                         const model = body.slice(9, 17).toString('ascii').trim();
                         const plate = body.slice(25).toString('latin1').trim();
