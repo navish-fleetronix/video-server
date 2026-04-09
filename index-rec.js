@@ -576,9 +576,14 @@ const tcpServer = net.createServer(socket => {
                         .map(b => {
                             const high = (b >> 4) & 0x0F;
                             const low  =  b       & 0x0F;
-                            return `${high}${low}`;
+                            return String(high) + String(low);
                         })
                         .join('');
+                        
+                        // Remove only first padding zero for 12-digit BCD → 11-digit phone
+                        if (phone.length === 12 && phone[0] === '0') {
+                            phone = phone.slice(1);
+                        }
                     const seq   = unescaped.readUInt16BE(10);
                     const body  = unescaped.slice(12);
                     
