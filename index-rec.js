@@ -572,22 +572,23 @@ const tcpServer = net.createServer(socket => {
                     if (unescaped.length < 12) { offset = end + 1; continue; }
 
                     const msgId = unescaped.readUInt16BE(0);
-                    const phoneDigits = unescaped.slice(4, 10)
-                        .map(b => {
-                            const high = (b >> 4) & 0x0F;
-                            const low  =  b       & 0x0F;
-                            const result = String(high) + String(low);
-                            console.log(`[PHONE DEBUG] byte 0x${b.toString(16).padStart(2,'0')} → high=${high} low=${low} → "${result}"`);
-                            return result;
-                        });
-                        phone = phoneDigits.join('');
-                        console.log(`[PHONE DEBUG] joined: "${phone}"`);
-                        
-                    // Remove only first padding zero for 12-digit BCD → 11-digit phone
-                    if (phone.length === 12 && phone[0] === '0') {
-                        phone = phone.slice(1);
+                    // Parse phone from BCD[6] - fix: use for loop to avoid map/join issues
+                    const phoneBytes = unescaped.slice(4, 10);
+                    let phoneStr = '';
+                    for (let i = 0; i < phoneBytes.length; i++) {
+                        const b = phoneBytes[i];
+                        const high = (b >> 4) & 0x0F;
+                        const low  = b & 0x0F;
+                        phoneStr += high.toString();
+                        phoneStr += low.toString();
                     }
-                    console.log(`[PHONE DEBUG] final phone: "${phone}"`);
+                    phone = phoneStr;
+                    
+                    // Remove only first padding zero (12-digit BCD → 11-digit phone)
+                    if (phone.length === 12 && phone[0] === '0') {
+                        phone = phone.substring(1);
+                    }
+                    console.log(`[PHONE DEBUG] Bytes: ${phoneBytes.toString('hex')} → Phone: ${phone}`);
                     const seq   = unescaped.readUInt16BE(10);
                     const body  = unescaped.slice(12);
                     
