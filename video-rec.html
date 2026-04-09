@@ -272,7 +272,7 @@
 
   <!-- Recordings -->
   <div class="recordings">
-    <h3>📹 SD Card Recordings</h3>
+    <h3>SD Card Recordings</h3>
     
     <div class="recording-controls">
         <select id="deviceSelect">
@@ -285,7 +285,7 @@
         </select>
         <input type="datetime-local" id="startTime" />
         <input type="datetime-local" id="endTime" />
-        <button onclick="queryRecordings()">🔍 Query</button>
+        <button onclick="queryRecordings()">Query</button>
         <button onclick="refreshRecordings()" class="btn-secondary">🔄 Refresh</button>
     </div>
     
@@ -309,14 +309,14 @@
   <!-- Playback -->
   <div id="playbackSection">
     <div class="playback-header">
-        <h3>▶️ Playback <span id="playbackInfo" style="font-size: 14px; color: #888; font-weight: normal;"></span></h3>
-        <button class="btn btn-danger" onclick="stopPlayback()">✕ Close</button>
+        <h3>Playback <span id="playbackInfo" style="font-size: 14px; color: #888; font-weight: normal;"></span></h3>
+        <button class="btn btn-danger" onclick="stopPlayback()">Close</button>
     </div>
     <video id="playback" controls style="width:100%; background:#000; border-radius: 8px;"></video>
     <div class="playback-controls">
-        <button class="btn" onclick="controlPlayback(0)">▶️ Play</button>
-        <button class="btn btn-secondary" onclick="controlPlayback(1)">⏸️ Pause</button>
-        <button class="btn btn-secondary" onclick="controlPlayback(2)">⏹️ Stop</button>
+        <button class="btn" onclick="controlPlayback(0)">Play</button>
+        <button class="btn btn-secondary" onclick="controlPlayback(1)">Pause</button>
+        <button class="btn btn-secondary" onclick="controlPlayback(2)">Stop</button>
     </div>
   </div>
 
