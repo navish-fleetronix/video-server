@@ -615,7 +615,8 @@ const tcpServer = net.createServer(socket => {
                         const now = new Date();
                         const yesterday = new Date(now - 24 * 60 * 60 * 1000);
                         setTimeout(() => {
-                            socket.write(buildQueryResourceList(phone, 0, dateToBcd(yesterday), dateToBcd(now)));
+                            // socket.write(buildQueryResourceList(phone, 0, dateToBcd(yesterday), dateToBcd(now)));
+                            socket.write(buildQueryResourceList(phone, 0, [0,0,0,0,0,0], [0,0,0,0,0,0])); 
                             console.log(`[AUTO-QUERY] Requesting recordings for ${phone}`);
                         }, 2000);
                     } 
@@ -705,6 +706,10 @@ const tcpServer = net.createServer(socket => {
 
                         console.log(`[DEBUG] 0x1205 raw bytes 4-10: ${unescaped.slice(4, 10).toString('hex')}`);
                         console.log(`[DEBUG] Phone being used: ${phone}`);
+
+                        console.log(`[DEBUG] 0x1205 body length: ${body.length}`);
+                        console.log(`[DEBUG] 0x1205 body hex: ${body.toString('hex')}`);
+
                         const result = parseResourceList(body);
                         deviceRecordings[phone] = result.recordings;
                         
