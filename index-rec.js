@@ -578,8 +578,7 @@ const tcpServer = net.createServer(socket => {
                             const low  =  b       & 0x0F;
                             return `${high}${low}`;
                         })
-                        .join('')
-                        .replace(/^0+/, '');
+                        .join('');
                     const seq   = unescaped.readUInt16BE(10);
                     const body  = unescaped.slice(12);
                     
@@ -689,7 +688,13 @@ const tcpServer = net.createServer(socket => {
                     }
                     // ── NEW: Handle recording list response (0x1205) ─────────────
                     else if (msgId === 0x1205) {
+                        console.log(`[DEBUG] Phone bytes: ${unescaped.slice(4, 10).toString('hex')}`);
+                        console.log(`[DEBUG] Parsed phone: ${phone}`);
                         console.log(`[RECORDINGS] Received list from ${phone}`);
+
+
+                        console.log(`[DEBUG] 0x1205 raw bytes 4-10: ${unescaped.slice(4, 10).toString('hex')}`);
+                        console.log(`[DEBUG] Phone being used: ${phone}`);
                         const result = parseResourceList(body);
                         deviceRecordings[phone] = result.recordings;
                         
