@@ -55,12 +55,20 @@ function startFFmpeg(channel) {
     const ffmpeg = spawn('/usr/local/bin/ffmpeg', [
         '-fflags',          '+genpts+discardcorrupt+igndts',
         '-err_detect',      'ignore_err',
-        '-f',               'hevc',          // raw H.265 annex-B bytestream
+        '-f',               'hevc',          // raw H.265 annex-B bytestream input
         '-probesize',       '500000',
         '-analyzeduration', '0',
         '-i',               'pipe:0',
-        '-c:v',             'copy',          // remux directly — no re-encode needed
-        // Audio: G.711A → AAC for browser compatibility
+        // hls.js MSE does NOT support H.265 — must transcode to H.264
+        '-c:v',             'libx264',
+        '-preset',          'ultrafast',
+        '-tune',            'zerolatency',
+        '-profile:v',       'baseline',      // widest browser compatibility
+        '-level',           '3.1',
+        '-g',               '30',
+        '-keyint_min',      '30',
+        '-sc_threshold',    '0',             // no scene-cut keyframes (keeps HLS segments clean)
+        // Audio: G.711A PCM → AAC
         '-c:a',             'aac',
         '-ar',              '8000',
         '-ac',              '1',
@@ -381,13 +389,11 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
-                        // Auth success → start live stream + query recordings
+                        // Auth success → start live stream
+                        // Recordings query is sent after the first location report (0x0200)
+                        // because the device needs time to mount/index its SD card after boot.
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
-                        // Delay the recordings query slightly so the device is ready
-                        setTimeout(() => {
-                            socket.write(buildQueryRecordings(phone));
-                        }, 2000);
 
                     } else if (msgId === 0x1205) {
                         // Terminal's recording list response (T/98 §5.6.2)
@@ -396,8 +402,14 @@ const tcpServer = net.createServer(socket => {
                         wsBroadcast({ type: 'recordings', data: recordings });
 
                     } else if (msgId === 0x0200) {
-                        // Location report
+                        // Location report — query recordings on the FIRST report only
+                        // (device is fully booted and SD card indexed by this point)
                         socket.write(buildAck(phone, seq, msgId));
+                        if (!socket._recordingsQueried) {
+                            socket._recordingsQueried = true;
+                            console.log(`[Recordings] Querying after first location report...`);
+                            setTimeout(() => socket.write(buildQueryRecordings(phone)), 500);
+                        }
 
                         const alarmFlags = body.readUInt32BE(0);
                         const statusBits = body.readUInt32BE(4);
