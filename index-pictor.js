@@ -445,12 +445,16 @@ const tcpServer = net.createServer(socket => {
 
     socket.on('data', data => {
         try {
+            // Log first packet of every connection to diagnose video stream
+            if (buffer.length === 0) {
+                console.log(`[TCP] First data from ${remote}: ${data.slice(0,32).toString('hex')} (${data.length} bytes)`);
+            }
             buffer = Buffer.concat([buffer, data]);
             let offset = 0;
 
             while (offset < buffer.length - 4) {
 
-                // ── Stream data packet (T/98 §5.5.3 — magic 0x30316364) ──────
+                // ── Stream data packet (T/98 §5.5.3 — magic 0x30316364 = "01cd") ──
                 if (buffer[offset]   === 0x30 && buffer[offset+1] === 0x31 &&
                     buffer[offset+2] === 0x63 && buffer[offset+3] === 0x64) {
 
@@ -506,11 +510,12 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
-                        // Auth success → start live stream
-                        // Recordings query is sent after the first location report (0x0200)
-                        // because the device needs time to mount/index its SD card after boot.
+                        // Auth success → send ACK + video stream request
                         socket.write(buildAck(phone, seq, msgId));
-                        socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
+                        const videoReq = buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1);
+                        console.log(`[VideoReq] Sending 0x9101 to device: IP=${CONFIG.serverIp} port=${CONFIG.tcpPort} ch=1`);
+                        console.log(`[VideoReq] Packet hex: ${videoReq.toString('hex')}`);
+                        socket.write(videoReq);
 
                     } else if (msgId === 0x1205) {
                         // Terminal's recording list response (T/98 §5.6.2)
