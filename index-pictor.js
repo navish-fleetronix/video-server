@@ -341,7 +341,7 @@ function buildFrame(msgId, body, phone) {
     const header = Buffer.alloc(12);
     header.writeUInt16BE(msgId,       0);
     header.writeUInt16BE(body.length, 2);
-    const phonePadded = phone.padStart(12, '0'); // BCD phone = 6 bytes = 12 hex digits
+    const phonePadded = phone.padStart(12, '0');
     Buffer.from(phonePadded.match(/.{2}/g).map(h => parseInt(h, 16))).copy(header, 4);
     header.writeUInt16BE(Math.floor(Math.random() * 0xFFFF), 10);
     const payload = Buffer.concat([header, body]);
@@ -389,7 +389,7 @@ function buildVideoRequest(phone, serverIp, serverPort, channel) {
 // Body = 24 bytes: ch(1) + startBCD(6) + endBCD(6) + alarmFlag(8) + avType(1) + streamType(1) + memType(1)
 function buildQueryRecordings(phone) {
     const body = Buffer.alloc(24, 0); // all-zero = no filters
-    body[0]  = 0;   // 0 = all channels (vendor dashboard uses 0, not 1)
+    body[0]  = 0;   // 0 = all channels
     body[21] = 3;   // avType 3 = Video OR Audio+Video (catches everything)
     body[22] = 0;   // streamType 0 = all streams
     body[23] = 0;   // memType 0 = all storage
@@ -561,11 +561,10 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildAck(phone, seq, msgId));
                         if (!socket._recordingsQueried) {
                             socket._recordingsQueried = true;
-                            const query = (attempt) => {
-                                console.log(`[Recordings] Query attempt ${attempt}...`);
-                                socket.write(buildQueryRecordings(phone));
+                            const query = (n) => {
+                                console.log(`[Recordings] Query attempt ${n}...`);
+                                if (socket.writable) socket.write(buildQueryRecordings(phone));
                             };
-                            // Query at 1s, 15s, 60s after first location report
                             setTimeout(() => query(1), 1000);
                             setTimeout(() => query(2), 15000);
                             setTimeout(() => query(3), 60000);
@@ -666,11 +665,22 @@ const tcpServer = net.createServer(socket => {
                     offset = end + 1;
                     continue;
                 }
-                else{
-                    console.log(`[TCP] No packet start at offset ${offset} (byte=0x${buffer[offset].toString(16)}) — skipping`);
-                }
+                else {
+                    // Fast resync: jump directly to next known packet start
+                    // instead of scanning one byte at a time (prevents freeze on corrupt data)
+                    const nextStream = buffer.indexOf(Buffer.from([0x30,0x31,0x63,0x64]), offset + 1);
+                    const next7E     = buffer.indexOf(0x7E, offset + 1);
+                    let   nextSync   = -1;
+                    if (nextStream !== -1 && next7E !== -1) nextSync = Math.min(nextStream, next7E);
+                    else if (nextStream !== -1) nextSync = nextStream;
+                    else if (next7E     !== -1) nextSync = next7E;
 
-                offset++;
+                    if (nextSync !== -1) {
+                        offset = nextSync;
+                    } else {
+                        break; // no more known headers in buffer — wait for more data
+                    }
+                }
             }
 
             buffer = buffer.slice(offset);
