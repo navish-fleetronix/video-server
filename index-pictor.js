@@ -477,6 +477,7 @@ const tcpServer = net.createServer(socket => {
 
     socket.on('data', data => {
         try {
+            console.log("DATA RECEIVED:", data.length, "bytes");
             // Log first packet of every connection to diagnose video stream
             if (buffer.length === 0) {
                 console.log(`[TCP] First data from ${remote}: ${data.slice(0,32).toString('hex')} (${data.length} bytes)`);
