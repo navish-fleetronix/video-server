@@ -486,7 +486,7 @@ const tcpServer = net.createServer(socket => {
             let offset = 0;
 
             while (offset < buffer.length - 4) {
-
+                console.log(`[TCP] Scanning for packets at offset ${buffer[offset]}...`);
                 // ── Stream data packet (T/98 §5.5.3 — magic 0x30316364 = "01cd") ──
                 if (buffer[offset]   === 0x30 && buffer[offset+1] === 0x31 &&
                     buffer[offset+2] === 0x63 && buffer[offset+3] === 0x64) {
