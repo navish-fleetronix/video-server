@@ -245,12 +245,10 @@ wss.on('connection', (ws, req) => {
             console.log(`[WS] Total device recordings in store: ${all.length}`);
 
             if (startDate) {
-                all = all.filter(r => r.startTime.split(' ')[0] >= startDate);
-                console.log(`[WS] After startDate filter: ${all.length}`);
+                all = all.filter(r => r.startTime >= startDate.replace('T', ' '));
             }
             if (endDate) {
-                all = all.filter(r => r.startTime.split(' ')[0] <= endDate);
-                console.log(`[WS] After endDate filter: ${all.length}`);
+                all = all.filter(r => r.endTime <= endDate.replace('T', ' '));
             }
 
             all.sort((a, b) => b.startTime.localeCompare(a.startTime));
@@ -812,33 +810,38 @@ const tcpServer = net.createServer(socket => {
                             let p = 6; // start of list (after serial 2 bytes + total 4 bytes)
 
                             for (let item = 0; item < totalItems && p + 28 <= body.length; item++) {
-                                const logicalCh = body[p];
-                                // startTime: BCD[6] YY MM DD HH MM SS
                                 const bcd = b => ((b >> 4) * 10 + (b & 0x0F));
-                                const sY = bcd(body[p+1]); const sM = bcd(body[p+2]); const sD = bcd(body[p+3]);
-                                const sH = bcd(body[p+4]); const sm = bcd(body[p+5]); const sS = bcd(body[p+6]);
-                                const eY = bcd(body[p+7]); const eM = bcd(body[p+8]); const eD = bcd(body[p+9]);
-                                const eH = bcd(body[p+10]);const em = bcd(body[p+11]);const eS = bcd(body[p+12]);
+                                const logicalCh = body[p];
+
+                                // T/98 §5.6.2 Table 23 layout:
+                                // [p+0]      logical channel (1 byte)
+                                // [p+1..p+6] start time BCD[6]
+                                // [p+7..p+12] end time BCD[6]
+                                // [p+13..p+20] alarm 64bits (8 bytes)
+                                // [p+21]     avType
+                                // [p+22]     streamType
+                                // [p+23]     memType
+                                // [p+24..p+27] fileSize DWORD
+                                // total = 28 bytes per record
+
+                                const sY = bcd(body[p+1]);  const sM = bcd(body[p+2]);  const sD = bcd(body[p+3]);
+                                const sH = bcd(body[p+4]);  const sm = bcd(body[p+5]);  const sS = bcd(body[p+6]);
+                                const eY = bcd(body[p+7]);  const eM = bcd(body[p+8]);  const eD = bcd(body[p+9]);
+                                const eH = bcd(body[p+10]); const em = bcd(body[p+11]); const eS = bcd(body[p+12]);
 
                                 const startTime = `20${String(sY).padStart(2,'0')}-${String(sM).padStart(2,'0')}-${String(sD).padStart(2,'0')} ${String(sH).padStart(2,'0')}:${String(sm).padStart(2,'0')}:${String(sS).padStart(2,'0')}`;
                                 const endTime   = `20${String(eY).padStart(2,'0')}-${String(eM).padStart(2,'0')}-${String(eD).padStart(2,'0')} ${String(eH).padStart(2,'0')}:${String(em).padStart(2,'0')}:${String(eS).padStart(2,'0')}`;
 
-                                // alarm: 8 bytes, avType: 1, streamType: 1, memType: 1, fileSize: 4
                                 const avType     = body[p + 21];
                                 const streamType = body[p + 22];
                                 const memType    = body[p + 23];
                                 const fileSize   = body.readUInt32BE(p + 24);
 
-                                const rec = {
-                                    ch: logicalCh, startTime, endTime,
-                                    avType, streamType, memType,
-                                    size: fileSize,
-                                    source: 'device', // distinguish from local .ts segments
-                                    phone,
-                                };
-                                deviceRecs.push(rec);
-                                console.log(`[Rec]   item${item}: ch${logicalCh} ${startTime} → ${endTime} size:${fileSize} avType:${avType}`);
-                                p += 28; // each record is 28 bytes (1+6+6+8+1+1+1+4)
+                                // Log raw bytes to verify BCD is correct
+                                console.log(`[Rec]   raw bytes p+1..p+12: ${[...body.slice(p+1, p+13)].map(b => b.toString(16).padStart(2,'0')).join(' ')}`);
+                                console.log(`[Rec]   item${item}: ch${logicalCh} ${startTime} → ${endTime} size:${fileSize}`);
+
+                                p += 28;
                             }
 
                             // Merge into deviceRecordings store (keyed by phone)
