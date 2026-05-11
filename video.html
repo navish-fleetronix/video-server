@@ -169,7 +169,7 @@
         </tr>
       </thead>
       <tbody id="recordingList">
-        <tr><td colspan="5" style="color:#666">Waiting for recordings...</td></tr>
+        <tr><td colspan="5" style="color:#666">Select a date range and click Search</td></tr>
       </tbody>
     </table>
   </div>
@@ -257,17 +257,17 @@
     ws.onerror = e => console.error('WS error', e);
 
     // ── WebSocket receive ─────────────────────────────────────────────────────
-    ws.onopen  = () => {
-        console.log('[WS] Connected to server');
-        // Auto-fetch today on connect
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('searchFrom').value = today;
-        document.getElementById('searchTo').value   = today;
-        //fetchRecordings();
-    };
+    // ws.onopen  = () => {
+    //     console.log('[WS] Connected to server');
+    //     // Auto-fetch today on connect
+    //     const today = new Date().toISOString().split('T')[0];
+    //     document.getElementById('searchFrom').value = today;
+    //     document.getElementById('searchTo').value   = today;
+    //     //fetchRecordings();
+    // };
 
     ws.onclose = () => console.warn('[WS] Disconnected');
-    ws.onerror = e  => console.error('[WS] Error:', e);
+    //ws.onerror = e  => console.error('[WS] Error:', e);
 
     ws.onmessage = e => {
         let msg;
