@@ -24,6 +24,36 @@ if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 // Structure: { ch, startTime:'YYYY-MM-DD HH:MM:SS', endTime, filePath, size }
 const recordingsDB = [];
 
+// ── Device recording list (from 0x1205 responses) ────────────────────────────
+const deviceRecordings = {}; // { [phone]: [ {ch, startTime, endTime, size, ...} ] }
+
+function broadcastRecordings() {
+    // Flatten all phones into one list, newest first
+    const all = Object.values(deviceRecordings)
+        .flat()
+        .sort((a, b) => b.startTime.localeCompare(a.startTime));
+    const msg = JSON.stringify({ type: 'recordings', data: all });
+    console.log(`[Rec] Broadcasting ${all.length} device recordings to browsers`);
+    wss.clients.forEach(client => {
+        if (client.readyState === 1) client.send(msg);
+    });
+}
+
+// Build 0x9205 — Query Resource List (T/98 §5.6.1)
+function buildQueryRecordings(phone) {
+    const body = Buffer.alloc(23);
+    body[0] = 0;        // logical channel: 0 = all channels
+    // startTime BCD[6]: all 0 = no start condition
+    body.fill(0x00, 1, 7);
+    // endTime BCD[6]: all 0 = no end condition
+    body.fill(0x00, 7, 13);
+    // alarmLogo 64bits: all 0 = no alarm filter
+    body.fill(0x00, 13, 21);
+    body[21] = 2;       // avType: 2 = Video only
+    body[22] = 0;       // streamType: 0 = all streams
+    return buildFrame(0x9205, body, phone);
+}
+
 // ── Recordings store ──────────────────────────────────────────────────────────
 // We store individual .ts segments with their timestamps.
 // Querying combines them into a single playlist covering the requested range.
@@ -114,26 +144,37 @@ wss.on('connection', (ws, req) => {
 
         // ── query_recordings ─────────────────────────────────────────────
         if (msg.type === 'query_recordings') {
-            const { startDate, endDate, channel } = msg;
-            console.log(`[WS] query_recordings | ch:${channel || 'all'} from:${startDate} to:${endDate}`);
+            const { startDate, endDate } = msg;
+            console.log(`[WS] query_recordings | from:${startDate} to:${endDate}`);
 
-            const fromMs = startDate ? new Date(startDate + ' 00:00:00').getTime() : null;
-            const toMs   = endDate   ? new Date(endDate   + ' 23:59:59').getTime() : null;
+            // Get all device recordings across all phones
+            let all = Object.values(deviceRecordings).flat();
+            console.log(`[WS] Total device recordings in store: ${all.length}`);
 
-            // Query all channels if not specified
-            const chs = channel ? [channel] : Object.keys(channels).map(Number);
-            let allRuns = [];
-            chs.forEach(ch => {
-                const runs = buildRecordingList(ch, fromMs, toMs);
-                console.log(`[WS] ch${ch} matched ${runs.length} recording session(s)`);
-                allRuns = allRuns.concat(runs);
-            });
+            if (startDate) {
+                all = all.filter(r => r.startTime.split(' ')[0] >= startDate);
+                console.log(`[WS] After startDate filter: ${all.length}`);
+            }
+            if (endDate) {
+                all = all.filter(r => r.startTime.split(' ')[0] <= endDate);
+                console.log(`[WS] After endDate filter: ${all.length}`);
+            }
 
-            // Sort by startTime descending (newest first)
-            allRuns.sort((a, b) => b.startTime.localeCompare(a.startTime));
+            all.sort((a, b) => b.startTime.localeCompare(a.startTime));
+            console.log(`[WS] Sending ${all.length} recordings to browser`);
+            ws.send(JSON.stringify({ type: 'recordings', data: all }));
 
-            console.log(`[WS] Sending ${allRuns.length} combined recordings to browser`);
-            ws.send(JSON.stringify({ type: 'recordings', data: allRuns }));
+            // Also re-query device if no results (device may have reconnected)
+            if (all.length === 0) {
+                console.log('[WS] No recordings in store — re-querying all connected devices');
+                // tcpSockets is the map of connected device sockets (see Patch 6)
+                Object.entries(tcpSockets).forEach(([ph, sock]) => {
+                    if (sock && !sock.destroyed) {
+                        sock.write(buildQueryRecordings(ph));
+                        console.log(`[WS] Re-sent 0x9205 to device ${ph}`);
+                    }
+                });
+            }
         }
 
         // ── playback_request ─────────────────────────────────────────────
@@ -481,7 +522,8 @@ function buildVideoRequest(phone, serverIp, serverPort, channel) {
     body.writeUInt16BE(0,          3 + N);  // UDP port = 0 (TCP only)
     body[5 + N] = channel;
     body[6 + N] = 1;   // video only (per Table 17: 1=Video)
-    body[7 + N] = 0;   // main stream
+    // body[7 + N] = 0;   // main stream
+    body[7 + N] = 1;   // substream (low quality, faster)
     return buildFrame(0x9101, body, phone);
 }
 
@@ -506,6 +548,8 @@ function parseAdditionalInfo(buf) {
 }
 
 // ── TCP server ────────────────────────────────────────────────────────────────
+const tcpSockets = {}; // { [phone]: socket } — track live device connections
+
 const tcpServer = net.createServer(socket => {
     const remote = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`Device connected: ${remote}`);
@@ -561,9 +605,15 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
-                        // Auth success → request live video, channel 1 only
+                        // Auth success → request live video (substream) + query recording list
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
+                        tcpSockets[phone] = socket; // register for re-query from browser
+                        // Query all recordings from device (T/98 §5.6.1, msg 0x9205)
+                        setTimeout(() => {
+                            socket.write(buildQueryRecordings(phone));
+                            console.log(`[signalling] Sent 0x9205 query recording list to ${phone}`);
+                        }, 2000); // small delay to let device settle after auth
 
                     } else if (msgId === 0x0200) {
                         socket.write(buildAck(phone, seq, msgId));
@@ -647,6 +697,59 @@ const tcpServer = net.createServer(socket => {
                             if (err) console.error('[GPS LOG] write error:', err.message);
                         });
 
+                    } else if (msgId === 0x1205) {
+                        // Device responded with its recording file list (T/98 §5.6.2)
+                        socket.write(buildAck(phone, seq, msgId));
+                        try {
+                            const totalItems = body.readUInt32BE(2); // bytes 2-5
+                            console.log(`[Rec] 0x1205 from ${phone} — totalItems: ${totalItems} bodyLen: ${body.length}`);
+
+                            const deviceRecs = [];
+                            let p = 6; // start of list (after serial 2 bytes + total 4 bytes)
+
+                            for (let item = 0; item < totalItems && p + 28 <= body.length; item++) {
+                                const logicalCh = body[p];
+                                // startTime: BCD[6] YY MM DD HH MM SS
+                                const bcd = b => ((b >> 4) * 10 + (b & 0x0F));
+                                const sY = bcd(body[p+1]); const sM = bcd(body[p+2]); const sD = bcd(body[p+3]);
+                                const sH = bcd(body[p+4]); const sm = bcd(body[p+5]); const sS = bcd(body[p+6]);
+                                const eY = bcd(body[p+7]); const eM = bcd(body[p+8]); const eD = bcd(body[p+9]);
+                                const eH = bcd(body[p+10]);const em = bcd(body[p+11]);const eS = bcd(body[p+12]);
+
+                                const startTime = `20${String(sY).padStart(2,'0')}-${String(sM).padStart(2,'0')}-${String(sD).padStart(2,'0')} ${String(sH).padStart(2,'0')}:${String(sm).padStart(2,'0')}:${String(sS).padStart(2,'0')}`;
+                                const endTime   = `20${String(eY).padStart(2,'0')}-${String(eM).padStart(2,'0')}-${String(eD).padStart(2,'0')} ${String(eH).padStart(2,'0')}:${String(em).padStart(2,'0')}:${String(eS).padStart(2,'0')}`;
+
+                                // alarm: 8 bytes, avType: 1, streamType: 1, memType: 1, fileSize: 4
+                                const avType     = body[p + 21];
+                                const streamType = body[p + 22];
+                                const memType    = body[p + 23];
+                                const fileSize   = body.readUInt32BE(p + 24);
+
+                                const rec = {
+                                    ch: logicalCh, startTime, endTime,
+                                    avType, streamType, memType,
+                                    size: fileSize,
+                                    source: 'device', // distinguish from local .ts segments
+                                    phone,
+                                };
+                                deviceRecs.push(rec);
+                                console.log(`[Rec]   item${item}: ch${logicalCh} ${startTime} → ${endTime} size:${fileSize} avType:${avType}`);
+                                p += 28; // each record is 28 bytes (1+6+6+8+1+1+1+4)
+                            }
+
+                            // Merge into deviceRecordings store (keyed by phone)
+                            if (!deviceRecordings[phone]) deviceRecordings[phone] = [];
+                            // Replace entries for this phone with fresh data
+                            deviceRecordings[phone] = deviceRecs;
+                            console.log(`[Rec] Stored ${deviceRecs.length} device recordings for ${phone}`);
+
+                            // Push updated list to all connected browsers
+                            broadcastRecordings();
+
+                        } catch(e) {
+                            console.error('[Rec] Failed to parse 0x1205:', e.message);
+                        }
+
                     } else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
@@ -665,7 +768,10 @@ const tcpServer = net.createServer(socket => {
         }
     });
 
-    socket.on('close', () => console.log(`Device disconnected: ${remote}`));
+    socket.on('close', () => {
+        console.log(`Device disconnected: ${remote} phone:${phone}`);
+        if (phone) delete tcpSockets[phone];
+    });
     socket.on('error', err => console.error(`Socket error: ${err.message}`));
 });
 
