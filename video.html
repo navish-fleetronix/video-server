@@ -146,16 +146,17 @@
     <h3>📹 Saved Recordings</h3>
 
     <div style="margin-bottom:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <label style="color:#aaa; font-size:13px;">From:</label>
-      <input type="date" id="searchFrom" style="background:#222; color:#fff; border:1px solid #444;
-             padding:6px 10px; border-radius:4px; font-size:13px;" />
-      <label style="color:#aaa; font-size:13px;">To:</label>
-      <input type="date" id="searchTo" style="background:#222; color:#fff; border:1px solid #444;
-             padding:6px 10px; border-radius:4px; font-size:13px;" />
-      <button class="btn" onclick="fetchRecordings()">🔍 Search</button>
-      <button class="btn" style="background:#444; color:#fff;" onclick="clearSearch()">✖ Clear</button>
-      <span id="searchStatus" style="color:#888; font-size:12px;"></span>
-    </div>
+  <label style="color:#aaa; font-size:13px;">From:</label>
+  <input type="datetime-local" id="searchFrom" style="background:#222; color:#fff; border:1px solid #444;
+         padding:6px 10px; border-radius:4px; font-size:13px;" />
+  <label style="color:#aaa; font-size:13px;">To:</label>
+  <input type="datetime-local" id="searchTo" style="background:#222; color:#fff; border:1px solid #444;
+         padding:6px 10px; border-radius:4px; font-size:13px;" />
+  <button class="btn" onclick="fetchRecordings()">🔍 Search</button>
+  <button class="btn" style="background:#444; color:#fff;" onclick="clearSearch()">✖ Clear</button>
+  <button class="btn" style="background:#27ae60;" onclick="saveRecording()">💾 Save Recording</button>
+  <span id="searchStatus" style="color:#888; font-size:12px;"></span>
+</div>
 
     <table>
       <thead>
@@ -305,6 +306,9 @@
             console.warn('[WS] playback_error:', msg.message);
             document.getElementById('searchStatus').textContent = '❌ ' + msg.message;
         }
+        if (msg.type === 'save_ok')       document.getElementById('searchStatus').textContent = '📤 ' + msg.message;
+        if (msg.type === 'save_complete') document.getElementById('searchStatus').textContent = '✅ ' + msg.message;
+        if (msg.type === 'save_error')    document.getElementById('searchStatus').textContent = '❌ ' + msg.message;
     };
 // ── Recordings: request from server ──────────────────────────────────────
     function fetchRecordings() {
@@ -394,7 +398,25 @@
         ws.send(JSON.stringify(payload));
         document.getElementById('searchStatus').textContent = '⏳ Loading playback...';
     }
+function saveRecording() {
+    const from = document.getElementById('searchFrom').value;
+    const to   = document.getElementById('searchTo').value;
+    const status = document.getElementById('searchStatus');
 
+    if (!from || !to) { status.textContent = '❌ Select start and end date/time'; return; }
+    if (ws.readyState !== WebSocket.OPEN) { status.textContent = '❌ Not connected'; return; }
+
+    // Convert datetime-local value ("2025-01-15T10:30") → "2025-01-15 10:30:00"
+    const fmt = v => v.replace('T', ' ') + ':00';
+
+    ws.send(JSON.stringify({
+        type: 'save_recording',
+        channel: 1,
+        startTime: fmt(from),
+        endTime:   fmt(to),
+    }));
+    status.textContent = '⏳ Sending save command to device...';
+}
     function startPlayback(url) {
         console.log('[Play] startPlayback() url:', url);
         const section = document.getElementById('playbackSection');

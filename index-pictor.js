@@ -76,7 +76,77 @@ function buildQueryRecordings(phone) {
     console.log(`[Rec] buildQueryRecordings: from ${pyy}-${pmo}-${pdd} to ${yy}-${mo}-${dd}`);
     return buildFrame(0x9205, body, phone);
 }
+function buildFileUpload(phone, channel, startTime, endTime) {
+    // startTime / endTime: 'YYYY-MM-DD HH:MM:SS'
+    const toBCD = (yy, mo, dd, hh, mm, ss) => Buffer.from([
+        ((Math.floor(yy/10)<<4)|(yy%10)),
+        ((Math.floor(mo/10)<<4)|(mo%10)),
+        ((Math.floor(dd/10)<<4)|(dd%10)),
+        ((Math.floor(hh/10)<<4)|(hh%10)),
+        ((Math.floor(mm/10)<<4)|(mm%10)),
+        ((Math.floor(ss/10)<<4)|(ss%10)),
+    ]);
 
+    const parseTS = s => {
+        const [date, time] = s.split(' ');
+        const [yr, mo, dd] = date.split('-').map(Number);
+        const [hh, mm, sec] = time.split(':').map(Number);
+        return { yy: yr % 100, mo, dd, hh, mm, ss: sec };
+    };
+
+    const ip   = Buffer.from(CONFIG.serverIp, 'ascii');
+    const user = Buffer.from('anonymous', 'ascii');
+    const pass = Buffer.from('', 'ascii');
+    const uploadPath = Buffer.from('/recordings/', 'ascii');
+
+    // §5.6.5 Table 26 layout:
+    // [0]     ip_len (k)
+    // [1..k]  ip
+    // [k+1..k+2] port WORD
+    // [k+3]   user_len (l)
+    // [k+4..k+4+l-1] username
+    // [k+4+l] pass_len (m)
+    // [k+5+l..k+5+l+m-1] password
+    // [k+5+l+m] path_len (n)
+    // [k+6+l+m..k+6+l+m+n-1] path
+    // [k+6+l+m+n] logical channel
+    // [k+7+l+m+n..k+12+l+m+n] start BCD[6]
+    // [k+13+l+m+n..k+18+l+m+n] end BCD[6]
+    // [k+19+l+m+n..k+26+l+m+n] alarm 64bits (all 0 = any)
+    // [k+27+l+m+n] avtype (2=video)
+    // [k+28+l+m+n] streamtype (0=any)
+    // [k+29+l+m+n] storetype (0=any)
+    // [k+30+l+m+n] task conditions (0x07 = wifi|lan|4g)
+
+    const k = ip.length, l = user.length, m = pass.length, n = uploadPath.length;
+    const bodyLen = 1 + k + 2 + 1 + l + 1 + m + 1 + n + 1 + 6 + 6 + 8 + 1 + 1 + 1 + 1;
+    const body = Buffer.alloc(bodyLen, 0);
+
+    let o = 0;
+    body[o++] = k;
+    ip.copy(body, o); o += k;
+    body.writeUInt16BE(21, o); o += 2;   // FTP port 21
+    body[o++] = l;
+    user.copy(body, o); o += l;
+    body[o++] = m;
+    // (password empty — m=0)
+    body[o++] = n;
+    uploadPath.copy(body, o); o += n;
+    body[o++] = channel;
+
+    const s = parseTS(startTime);
+    const e = parseTS(endTime);
+    toBCD(s.yy, s.mo, s.dd, s.hh, s.mm, s.ss).copy(body, o); o += 6;
+    toBCD(e.yy, e.mo, e.dd, e.hh, e.mm, e.ss).copy(body, o); o += 6;
+
+    body.fill(0, o, o + 8); o += 8;  // alarm = all (no filter)
+    body[o++] = 2;   // video only
+    body[o++] = 0;   // any stream
+    body[o++] = 0;   // any storage
+    body[o++] = 0x07; // wifi + lan + 4g all allowed
+
+    return buildFrame(0x9206, body, phone);
+}
 // ── Recordings store ──────────────────────────────────────────────────────────
 // We store individual .ts segments with their timestamps.
 // Querying combines them into a single playlist covering the requested range.
@@ -249,6 +319,17 @@ wss.on('connection', (ws, req) => {
                 console.log(`[WS] Playlist written: ${playlistName} with ${segs.length} segments`);
                 ws.send(JSON.stringify({ type: 'playback_url', url: `/public/${playlistName}` }));
             });
+        }
+        if (msg.type === 'save_recording') {
+            const { channel, startTime, endTime } = msg;
+            const phone = Object.keys(tcpSockets)[0]; // use first connected device
+            if (!phone || !tcpSockets[phone] || tcpSockets[phone].destroyed) {
+                ws.send(JSON.stringify({ type: 'save_error', message: 'No device connected' }));
+                return;
+            }
+            console.log(`[Save] 0x9206 → ch${channel} ${startTime} → ${endTime}`);
+            tcpSockets[phone].write(buildFileUpload(phone, channel, startTime, endTime));
+            ws.send(JSON.stringify({ type: 'save_ok', message: 'Upload command sent to device' }));
         }
     });
 
@@ -772,7 +853,16 @@ const tcpServer = net.createServer(socket => {
                         } catch(e) {
                             console.error('[Rec] Failed to parse 0x1205:', e.message);
                         }
-
+                        } else if (msgId === 0x1206) {
+                            socket.write(buildAck(phone, seq, msgId));
+                            const result = body[2];
+                            console.log(`[Save] 0x1206 upload complete — result: ${result}`);
+                            wss.clients.forEach(c => {
+                                if (c.readyState === 1) c.send(JSON.stringify({
+                                    type: result === 0 ? 'save_complete' : 'save_error',
+                                    message: result === 0 ? 'Recording saved to public/recordings/' : 'Device upload failed',
+                                }));
+                            });
                     } else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
