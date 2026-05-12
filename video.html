@@ -44,7 +44,50 @@
     <div class="info-box" id="info-satellites">Satellites: --</div>
     <div class="info-box" id="info-alarms">Alarms: --</div>
   </div>
+<!-- Recordings -->
+  <div style="margin-top:30px;">
+    <h3>📹 Recordings</h3>
 
+    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+      <label style="color:#aaa; font-size:13px;">From:</label>
+      <input type="datetime-local" id="recFrom"
+             style="background:#222;color:#fff;border:1px solid #444;padding:6px 10px;border-radius:4px;font-size:13px;" />
+      <label style="color:#aaa; font-size:13px;">To:</label>
+      <input type="datetime-local" id="recTo"
+             style="background:#222;color:#fff;border:1px solid #444;padding:6px 10px;border-radius:4px;font-size:13px;" />
+      <button onclick="searchRecordings()"
+              style="background:#00d4ff;color:#000;border:none;padding:7px 16px;border-radius:4px;cursor:pointer;font-weight:bold;">
+        🔍 Search
+      </button>
+      <button onclick="downloadSelected()"
+              style="background:#27ae60;color:#fff;border:none;padding:7px 16px;border-radius:4px;cursor:pointer;font-weight:bold;">
+        ⬇ Download Selected
+      </button>
+      <span id="recStatus" style="color:#aaa;font-size:12px;"></span>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr style="background:#222;">
+          <th style="padding:8px;color:#00d4ff;text-align:left;"><input type="checkbox" id="selectAll" onchange="toggleAll(this)"></th>
+          <th style="padding:8px;color:#00d4ff;text-align:left;">CH</th>
+          <th style="padding:8px;color:#00d4ff;text-align:left;">Start</th>
+          <th style="padding:8px;color:#00d4ff;text-align:left;">End</th>
+          <th style="padding:8px;color:#00d4ff;text-align:left;">Size</th>
+          <th style="padding:8px;color:#00d4ff;text-align:left;">Action</th>
+        </tr>
+      </thead>
+      <tbody id="recList">
+        <tr><td colspan="6" style="color:#666;padding:10px;">Select date range and click Search</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Playback -->
+  <div id="playbackSection" style="display:none;margin-top:20px;">
+    <h3>▶ Playback</h3>
+    <video id="playback" controls style="width:100%;max-width:900px;background:#000;"></video>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -139,6 +182,144 @@
             document.getElementById('info-alarms').textContent     = `Alarms: ${msg.alarms.length ? msg.alarms.join(', ') : 'None'}`;
         }
     };
+
+
+
+    // ── Recordings ────────────────────────────────────────────────────────
+    let _recs = [];
+
+    // Handle incoming WS messages for recordings
+    const _origOnMessage = ws.onmessage;
+    ws.onmessage = e => {
+        let msg; try { msg = JSON.parse(e.data); } catch(_){ return; }
+
+        if (msg.type === 'location') {
+            // pass to original handler
+            updateMap(msg.lat, msg.lon, msg.speed, msg.direction);
+            document.getElementById('info-lat').textContent        = `Latitude: ${msg.lat.toFixed(6)}`;
+            document.getElementById('info-lon').textContent        = `Longitude: ${msg.lon.toFixed(6)}`;
+            document.getElementById('info-speed').textContent      = `Speed: ${msg.speed} km/h`;
+            document.getElementById('info-dir').textContent        = `Direction: ${msg.direction}°`;
+            document.getElementById('info-elev').textContent       = `Elevation: ${msg.elevation} m`;
+            document.getElementById('info-dt').textContent         = `DateTime: ${msg.datetime}`;
+            document.getElementById('info-acc').textContent        = `ACC: ${msg.accOn ? 'ON' : 'OFF'}`;
+            document.getElementById('info-located').textContent    = `Located: ${msg.located ? 'Yes' : 'No'}`;
+            document.getElementById('info-mileage').textContent    = `Mileage: ${msg.mileage || '--'}`;
+            document.getElementById('info-voltage').textContent    = `Voltage: ${msg.voltage || '--'}`;
+            document.getElementById('info-satellites').textContent = `Satellites: ${msg.satellites || '--'}`;
+            document.getElementById('info-alarms').textContent     = `Alarms: ${msg.alarms.length ? msg.alarms.join(', ') : 'None'}`;
+        }
+
+        if (msg.type === 'recordings') {
+            console.log('[Rec] Received', msg.data.length, 'recordings');
+            _recs = msg.data;
+            renderRecordings(_recs);
+            document.getElementById('recStatus').textContent = `✅ ${_recs.length} recording(s) found`;
+        }
+
+        if (msg.type === 'recording_ready') {
+            console.log('[Rec] File ready:', msg.url);
+            document.getElementById('recStatus').textContent = '✅ File ready — playing';
+            playFile(msg.url);
+        }
+
+        if (msg.type === 'status') {
+            document.getElementById('recStatus').textContent = msg.message;
+        }
+
+        if (msg.type === 'error') {
+            document.getElementById('recStatus').textContent = '❌ ' + msg.message;
+        }
+    };
+
+    function searchRecordings() {
+        const from = document.getElementById('recFrom').value; // "YYYY-MM-DDTHH:MM"
+        const to   = document.getElementById('recTo').value;
+        console.log('[Rec] searchRecordings from:', from, 'to:', to);
+        if (!from || !to) {
+            document.getElementById('recStatus').textContent = '⚠️ Please select both From and To';
+            return;
+        }
+        if (ws.readyState !== WebSocket.OPEN) {
+            document.getElementById('recStatus').textContent = '❌ Not connected';
+            return;
+        }
+        document.getElementById('recStatus').textContent = '⏳ Querying device...';
+        // Convert "YYYY-MM-DDTHH:MM" → "YYYY-MM-DD HH:MM:00"
+        const fmt = v => v.replace('T', ' ') + ':00';
+        ws.send(JSON.stringify({ type: 'query_recordings', startDate: fmt(from), endDate: fmt(to) }));
+    }
+
+    function renderRecordings(list) {
+        const tbody = document.getElementById('recList');
+        if (!list || list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="color:#666;padding:10px;">No recordings found</td></tr>';
+            return;
+        }
+        let html = '';
+        list.forEach((r, i) => {
+            html += `<tr style="border-bottom:1px solid #333;">
+                <td style="padding:8px;"><input type="checkbox" class="rec-check" data-idx="${i}"></td>
+                <td style="padding:8px;">CH${r.ch}</td>
+                <td style="padding:8px;">${r.startTime}</td>
+                <td style="padding:8px;">${r.endTime}</td>
+                <td style="padding:8px;">${r.size ? (r.size/1024/1024).toFixed(1)+' MB' : '--'}</td>
+                <td style="padding:8px;">
+                  <button onclick="requestDownload(${i})"
+                    style="background:#00d4ff;color:#000;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-weight:bold;">
+                    ⬇ Get
+                  </button>
+                </td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function toggleAll(cb) {
+        document.querySelectorAll('.rec-check').forEach(c => c.checked = cb.checked);
+    }
+
+    function requestDownload(index) {
+        const rec = _recs[index];
+        if (!rec) return;
+        console.log('[Rec] requestDownload:', rec);
+        document.getElementById('recStatus').textContent = '⏳ Requesting device upload to FTP...';
+        ws.send(JSON.stringify({
+            type:      'download_recording',
+            ch:        rec.ch,
+            startTime: rec.startTime,
+            endTime:   rec.endTime,
+            phone:     rec.phone,
+        }));
+    }
+
+    function downloadSelected() {
+        const checked = [...document.querySelectorAll('.rec-check:checked')];
+        if (checked.length === 0) {
+            document.getElementById('recStatus').textContent = '⚠️ Select at least one recording';
+            return;
+        }
+        checked.forEach(cb => requestDownload(parseInt(cb.dataset.idx)));
+    }
+
+    function playFile(url) {
+        const section = document.getElementById('playbackSection');
+        section.style.display = 'block';
+        section.scrollIntoView({ behavior: 'smooth' });
+        const video = document.getElementById('playback');
+        if (window._playHls) { window._playHls.destroy(); window._playHls = null; }
+        if (url.endsWith('.m3u8') && Hls.isSupported()) {
+            const hls = new Hls();
+            window._playHls = hls;
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+            hls.on(Hls.Events.ERROR, (e,d) => console.error('[HLS]', d));
+        } else {
+            video.src = url;
+            video.play().catch(console.warn);
+        }
+    }
   </script>
 </body>
 </html>

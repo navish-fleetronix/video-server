@@ -20,6 +20,43 @@ console.log(`Server IP: ${CONFIG.serverIp}`);
 // ── Create output folder ──────────────────────────────────────────────────────
 if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 
+// ── Device state & FTP ───────────────────────────────────────────────────────
+const tcpSockets      = {}; // { [phone]: socket }
+const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
+
+// Built-in FTP server so device can upload recordings to us
+// npm install ftp-srv  ←  run this once
+const FtpSrv = require('ftp-srv');
+const ftpServer = new FtpSrv({
+    url:       `ftp://0.0.0.0:2121`,
+    pasv_url:  process.env.SERVER_IP,
+    pasv_min:  3500,
+    pasv_max:  3600,
+    anonymous: true,
+});
+if (!fs.existsSync('./recordings')) fs.mkdirSync('./recordings');
+
+ftpServer.on('login', ({ connection }, resolve) => {
+    console.log('[FTP] Device logged in');
+    resolve({ root: path.resolve('./recordings') });
+});
+
+ftpServer.on('upload-end', ({ filePath }) => {
+    console.log('[FTP] Upload complete:', filePath);
+    // Notify all browsers that a new file is ready
+    const filename = path.basename(filePath);
+    wss.clients.forEach(c => {
+        if (c.readyState === 1) c.send(JSON.stringify({
+            type: 'recording_ready',
+            url:  `/recordings/${filename}`,
+            filename,
+        }));
+    });
+});
+
+ftpServer.listen().then(() => console.log('✓ FTP server on :2121'));
+
+
 // ── WebSocket server ──────────────────────────────────────────────────────────
 const wss = new WebSocketServer({ port: CONFIG.wsPort });
 console.log(`✓ WebSocket on :${CONFIG.wsPort}`);
@@ -33,6 +70,44 @@ wss.on('connection', (ws, req) => {
             return;
         }
         console.log(`[WS] Message from browser: type=${msg.type}`, msg);
+
+        // ── query_recordings: return cached list filtered by date ─────────
+        if (msg.type === 'query_recordings') {
+            const { startDate, endDate } = msg;
+            let all = Object.values(deviceRecordings).flat();
+            console.log(`[WS] query_recordings total in store:${all.length} from:${startDate} to:${endDate}`);
+            if (startDate) all = all.filter(r => r.startTime.split(' ')[0] >= startDate);
+            if (endDate)   all = all.filter(r => r.startTime.split(' ')[0] <= endDate);
+            all.sort((a, b) => b.startTime.localeCompare(a.startTime));
+            ws.send(JSON.stringify({ type: 'recordings', data: all }));
+            console.log(`[WS] Sent ${all.length} recordings to browser`);
+
+            // If empty, re-ask device
+            if (all.length === 0) {
+                Object.entries(tcpSockets).forEach(([ph, sock]) => {
+                    if (sock && !sock.destroyed) {
+                        sock.write(buildQueryRecordings(ph, startDate, endDate));
+                        console.log(`[WS] Re-sent 0x9205 to ${ph}`);
+                    }
+                });
+            }
+        }
+
+        // ── download_recording: tell device to upload a file via FTP ──────
+        if (msg.type === 'download_recording') {
+            const { ch, startTime, endTime, phone: reqPhone } = msg;
+            const targetPhone = reqPhone || Object.keys(tcpSockets)[0];
+            console.log(`[WS] download_recording ch:${ch} ${startTime}→${endTime} phone:${targetPhone}`);
+
+            if (!targetPhone || !tcpSockets[targetPhone] || tcpSockets[targetPhone].destroyed) {
+                ws.send(JSON.stringify({ type: 'error', message: 'Device not connected' }));
+                return;
+            }
+            tcpSockets[targetPhone].write(
+                buildFtpUploadRequest(targetPhone, ch, startTime, endTime)
+            );
+            ws.send(JSON.stringify({ type: 'status', message: '⏳ Device uploading to FTP... please wait' }));
+        }
     });
 
     ws.on('close', () => console.log('[WS] Browser disconnected'));
@@ -45,6 +120,8 @@ http.createServer((req, res) => {
         filePath = './video.html';
     } else if (req.url.startsWith('/public/')) {
         filePath = `.${req.url}`;
+    } else if (req.url.startsWith('/recordings/')) {
+    filePath = `.${req.url}`;
     } else {
         filePath = `.${req.url}`;
     }
@@ -55,6 +132,8 @@ http.createServer((req, res) => {
         '.js':   'application/javascript',
         '.m3u8': 'application/vnd.apple.mpegurl',
         '.ts':   'video/mp2t',
+        '.mp4':  'video/mp4',
+        '.avi':  'video/x-msvideo',
     };
 
     fs.readFile(filePath, (err, data) => {
@@ -352,6 +431,101 @@ function parseAdditionalInfo(buf) {
     return result;
 }
 
+// ── Build 0x8103 — parameter query (channel list) ────────────────────────────
+function buildParamQuery(phone) {
+    const body = Buffer.alloc(4);
+    body.writeUInt32BE(0x0076, 0); // query param: audio/video channel list
+    return buildFrame(0x8103, body, phone);
+}
+
+// ── Build 0x9205 — query recording list ──────────────────────────────────────
+function buildQueryRecordings(phone, startDate, endDate) {
+    const toBCDBytes = (yy, mo, dd, hh, mm, ss) => Buffer.from([
+        ((Math.floor(yy/10)<<4)|(yy%10)),
+        ((Math.floor(mo/10)<<4)|(mo%10)),
+        ((Math.floor(dd/10)<<4)|(dd%10)),
+        ((Math.floor(hh/10)<<4)|(hh%10)),
+        ((Math.floor(mm/10)<<4)|(mm%10)),
+        ((Math.floor(ss/10)<<4)|(ss%10)),
+    ]);
+
+    // Default: last 30 days to today
+    const now  = new Date();
+    const past = new Date(now.getTime() - 30*24*60*60*1000);
+
+    const [sDate, sTime] = startDate ? startDate.split(' ') : [`${past.getFullYear()}-${String(past.getMonth()+1).padStart(2,'0')}-${String(past.getDate()).padStart(2,'0')}`, '00:00:00'];
+    const [eDate, eTime] = endDate   ? endDate.split(' ')   : [`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`, '23:59:59'];
+
+    const [sY,sM,sD] = sDate.split('-').map(Number);
+    const [sH,sm,sS] = (sTime||'00:00:00').split(':').map(Number);
+    const [eY,eM,eD] = eDate.split('-').map(Number);
+    const [eH,em,eS] = (eTime||'23:59:59').split(':').map(Number);
+
+    const body = Buffer.alloc(23);
+    body[0] = 0; // all channels
+    toBCDBytes(sY%100, sM, sD, sH, sm, sS).copy(body, 1);
+    toBCDBytes(eY%100, eM, eD, eH, em, eS).copy(body, 7);
+    body.fill(0x00, 13, 21); // no alarm filter
+    body[21] = 2; // video only
+    body[22] = 0; // all streams
+    console.log(`[Rec] buildQueryRecordings: ${sDate} ${sTime} → ${eDate} ${eTime}`);
+    return buildFrame(0x9205, body, phone);
+}
+
+// ── Build 0x9206 — FTP upload request ────────────────────────────────────────
+function buildFtpUploadRequest(phone, channel, startTime, endTime) {
+    const serverIp   = CONFIG.serverIp;
+    const ftpPort    = 2121;
+    const ftpUser    = 'anonymous';
+    const ftpPass    = 'anonymous';
+    const uploadPath = '/';
+
+    const toBCDBytes = (yy, mo, dd, hh, mm, ss) => Buffer.from([
+        ((Math.floor(yy/10)<<4)|(yy%10)),
+        ((Math.floor(mo/10)<<4)|(mo%10)),
+        ((Math.floor(dd/10)<<4)|(dd%10)),
+        ((Math.floor(hh/10)<<4)|(hh%10)),
+        ((Math.floor(mm/10)<<4)|(mm%10)),
+        ((Math.floor(ss/10)<<4)|(ss%10)),
+    ]);
+
+    const [sDate, sTime='00:00:00'] = startTime.split(' ');
+    const [eDate, eTime='23:59:59'] = endTime.split(' ');
+    const [sY,sM,sD] = sDate.split('-').map(Number);
+    const [sH,sm,sS] = sTime.split(':').map(Number);
+    const [eY,eM,eD] = eDate.split('-').map(Number);
+    const [eH,em,eS] = eTime.split(':').map(Number);
+
+    const ipBuf   = Buffer.from(serverIp, 'ascii');
+    const userBuf = Buffer.from(ftpUser,  'ascii');
+    const passBuf = Buffer.from(ftpPass,  'ascii');
+    const pathBuf = Buffer.from(uploadPath,'ascii');
+
+    // Table 26 layout: ipLen(1) ip(k) port(2) userLen(1) user(l)
+    //                  passLen(1) pass(m) pathLen(1) path(n)
+    //                  logicalCh(1) startBCD(6) endBCD(6)
+    //                  alarmLogo(8) avType(1) streamType(1) storageType(1) taskCondition(1)
+    const k = ipBuf.length, l = userBuf.length, m = passBuf.length, n = pathBuf.length;
+    const body = Buffer.alloc(1+k+2+1+l+1+m+1+n+1+6+6+8+1+1+1+1);
+    let p = 0;
+    body[p++] = k;                               ipBuf.copy(body, p);   p += k;
+    body.writeUInt16BE(ftpPort, p);              p += 2;
+    body[p++] = l;                               userBuf.copy(body, p); p += l;
+    body[p++] = m;                               passBuf.copy(body, p); p += m;
+    body[p++] = n;                               pathBuf.copy(body, p); p += n;
+    body[p++] = channel;
+    toBCDBytes(sY%100,sM,sD,sH,sm,sS).copy(body, p); p += 6;
+    toBCDBytes(eY%100,eM,eD,eH,em,eS).copy(body, p); p += 6;
+    body.fill(0x00, p, p+8);                     p += 8; // no alarm filter
+    body[p++] = 2;  // avType: video only
+    body[p++] = 0;  // all streams
+    body[p++] = 0;  // all storage
+    body[p++] = 0b00000100; // task condition: bit2=1 = allow on 4G
+
+    console.log(`[Rec] buildFtpUploadRequest ch:${channel} ${startTime}→${endTime}`);
+    return buildFrame(0x9206, body, phone);
+}
+
 // ── TCP server ────────────────────────────────────────────────────────────────
 const tcpServer = net.createServer(socket => {
     const remote = `${socket.remoteAddress}:${socket.remotePort}`;
@@ -408,9 +582,24 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
 
                     } else if (msgId === 0x0102) {
-                        // Auth success → request live video, channel 1 only
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
+                        tcpSockets[phone] = socket;
+                        console.log(`[signalling] Registered socket for ${phone}`);
+                        // Step 1: param query handshake (required before 0x9205 on SDK V6.07)
+                        setTimeout(() => {
+                            if (!socket.destroyed) {
+                                socket.write(buildParamQuery(phone));
+                                console.log(`[signalling] Sent 0x8103 to ${phone}`);
+                            }
+                        }, 2000);
+                        // Step 2: query recording list after handshake
+                        setTimeout(() => {
+                            if (!socket.destroyed) {
+                                socket.write(buildQueryRecordings(phone));
+                                console.log(`[signalling] Sent 0x9205 to ${phone}`);
+                            }
+                        }, 5000);
 
                     } else if (msgId === 0x0200) {
                         socket.write(buildAck(phone, seq, msgId));
@@ -494,6 +683,52 @@ const tcpServer = net.createServer(socket => {
                             if (err) console.error('[GPS LOG] write error:', err.message);
                         });
 
+                    } else if (msgId === 0x0104) {
+                        // Response to our 0x8103 param query — device is ready
+                        socket.write(buildAck(phone, seq, msgId));
+                        console.log(`[signalling] 0x0104 param response from ${phone} — device ready`);
+
+                    } else if (msgId === 0x1205) {
+                        // Device SD card recording list
+                        socket.write(buildAck(phone, seq, msgId));
+                        console.log(`[Rec] 0x1205 from ${phone} bodyLen:${body.length}`);
+                        try {
+                            if (body.length < 6) { console.warn('[Rec] Body too short'); offset = end+1; continue; }
+                            const totalItems = body.readUInt32BE(2);
+                            console.log(`[Rec] totalItems:${totalItems}`);
+                            const bcd = b => ((b>>4)*10+(b&0x0F));
+                            const recs = []; let p = 6;
+                            while (p + 28 <= body.length) {
+                                const ch = body[p];
+                                const sY=bcd(body[p+1]),sM=bcd(body[p+2]),sD=bcd(body[p+3]);
+                                const sH=bcd(body[p+4]),sm=bcd(body[p+5]),sS=bcd(body[p+6]);
+                                const eY=bcd(body[p+7]),eM=bcd(body[p+8]),eD=bcd(body[p+9]);
+                                const eH=bcd(body[p+10]),em=bcd(body[p+11]),eS=bcd(body[p+12]);
+                                const startTime = `20${String(sY).padStart(2,'0')}-${String(sM).padStart(2,'0')}-${String(sD).padStart(2,'0')} ${String(sH).padStart(2,'0')}:${String(sm).padStart(2,'0')}:${String(sS).padStart(2,'0')}`;
+                                const endTime   = `20${String(eY).padStart(2,'0')}-${String(eM).padStart(2,'0')}-${String(eD).padStart(2,'0')} ${String(eH).padStart(2,'0')}:${String(em).padStart(2,'0')}:${String(eS).padStart(2,'0')}`;
+                                recs.push({ ch, startTime, endTime, size: body.readUInt32BE(p+24), phone });
+                                console.log(`[Rec] ch${ch} ${startTime}→${endTime}`);
+                                p += 28;
+                            }
+                            deviceRecordings[phone] = recs;
+                            console.log(`[Rec] Stored ${recs.length} recordings for ${phone}`);
+                            // Push to all browsers immediately
+                            wss.clients.forEach(c => {
+                                if (c.readyState === 1) c.send(JSON.stringify({ type: 'recordings', data: recs }));
+                            });
+                        } catch(e) { console.error('[Rec] Parse error:', e.message); }
+
+                    } else if (msgId === 0x1206) {
+                        // Device finished uploading file to our FTP server
+                        socket.write(buildAck(phone, seq, msgId));
+                        const result = body[2];
+                        console.log(`[Rec] 0x1206 upload complete from ${phone} result:${result}`);
+                        if (result !== 0) {
+                            wss.clients.forEach(c => {
+                                if (c.readyState === 1) c.send(JSON.stringify({ type: 'error', message: 'Device FTP upload failed' }));
+                            });
+                        }
+
                     } else {
                         socket.write(buildAck(phone, seq, msgId));
                     }
@@ -512,7 +747,10 @@ const tcpServer = net.createServer(socket => {
         }
     });
 
-    socket.on('close', () => console.log(`Device disconnected: ${remote}`));
+    socket.on('close', () => {
+        console.log(`Device disconnected: ${remote} phone:${phone}`);
+        if (phone) delete tcpSockets[phone];
+    });
     socket.on('error', err => console.error(`Socket error: ${err.message}`));
 });
 
