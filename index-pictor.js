@@ -26,52 +26,168 @@ const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
 
 // Built-in FTP server so device can upload recordings to us
 // npm install ftp-srv  ←  run this once
-const FtpSrv = require('ftp-srv');
-const ftpServer = new FtpSrv({
-    url:       'ftp://0.0.0.0:2121',
-    pasv_url:  () => '20.244.41.46',
-    pasv_min:  3500,
-    pasv_max:  3600,
-    anonymous: true,
-    greeting:  'FTP Server Ready',
-    tls:       false,
-    epsv:      false,   // ← disable EPSV, force old-style PASV (227) for device compatibility
-});
+// ── Minimal FTP Server (PASV only, no EPSV — required for Babelstar device) ──
+if (!fs.existsSync('./recordings')) fs.mkdirSync('./recordings');
 
-ftpServer.on('login', ({ connection, username, password }, resolve, reject) => {
-    console.log(`[FTP] ✅ Login — user:"${username}" ip:${connection.ip}`);
-    resolve({ root: path.resolve('./recordings') });
-});
+const PUBLIC_IP = '20.244.41.46';
+const FTP_PORT  = 2121;
+const PASV_MIN  = 3500;
+const PASV_MAX  = 3600;
+let   pasvPort  = PASV_MIN;
 
-ftpServer.on('disconnect', ({ connection, isBadSequence }) => {
-    console.log(`[FTP] Disconnected ip:${connection.ip} badSeq:${isBadSequence}`);
-});
+function nextPasvPort() {
+    const p = pasvPort++;
+    if (pasvPort > PASV_MAX) pasvPort = PASV_MIN;
+    return p;
+}
 
-ftpServer.on('client-error', ({ connection, context, error }) => {
-    console.error(`[FTP] ❌ Client error ip:${connection.ip} ctx:${context} err:${error.message}`);
-});
+net.createServer(ftpSocket => {
+    const clientIp = ftpSocket.remoteAddress;
+    console.log(`[FTP] Client connected: ${clientIp}`);
+    let dataServer = null;
+    let dataSocket = null;
+    let uploadPath = null;
+    let uploadStream = null;
 
-ftpServer.on('upload-end', ({ filePath }) => {
-    console.log('[FTP] ✅ Upload complete:', filePath);
-    const filename = path.basename(filePath);
-    wss.clients.forEach(c => {
-        if (c.readyState === 1) c.send(JSON.stringify({
-            type: 'recording_ready',
-            url:  `/recordings/${filename}`,
-            filename,
-        }));
+    const reply = (code, msg) => {
+        console.log(`[FTP] → ${code} ${msg}`);
+        ftpSocket.write(`${code} ${msg}\r\n`);
+    };
+
+    reply(220, 'FTP Server Ready');
+
+    ftpSocket.on('data', data => {
+        const lines = data.toString().split('\r\n').filter(Boolean);
+        lines.forEach(line => {
+            const [cmd, ...args] = line.trim().split(' ');
+            const arg = args.join(' ');
+            console.log(`[FTP] ← ${line.trim()}`);
+
+            switch(cmd.toUpperCase()) {
+                case 'USER':
+                    reply(230, 'User logged in, proceed');
+                    break;
+
+                case 'PASS':
+                    reply(230, 'User logged in, proceed');
+                    break;
+
+                case 'SYST':
+                    reply(215, 'UNIX Type: L8');
+                    break;
+
+                case 'TYPE':
+                    reply(200, 'Type set to I');
+                    break;
+
+                case 'PWD':
+                case 'XPWD':
+                    reply(257, '"/" is current directory');
+                    break;
+
+                case 'CWD':
+                    reply(250, 'Directory changed');
+                    break;
+
+                case 'MKD':
+                    reply(257, `"/${arg}" created`);
+                    break;
+
+                case 'EPSV':
+                    // Reject EPSV — force device to fall back to PASV
+                    reply(502, 'EPSV not supported, use PASV');
+                    break;
+
+                case 'PASV': {
+                    // Close any previous data server
+                    if (dataServer) { try { dataServer.close(); } catch(_){} }
+                    const port = nextPasvPort();
+                    dataServer = net.createServer(s => {
+                        console.log(`[FTP] Data connection from ${s.remoteAddress}:${s.remotePort}`);
+                        dataSocket = s;
+                    });
+                    dataServer.listen(port, '0.0.0.0', () => {
+                        // PASV response: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
+                        const ipParts = PUBLIC_IP.split('.');
+                        const p1 = Math.floor(port / 256);
+                        const p2 = port % 256;
+                        reply(227, `Entering Passive Mode (${ipParts.join(',')},${p1},${p2})`);
+                    });
+                    break;
+                }
+
+                case 'LIST':
+                case 'NLST':
+                    reply(150, 'Here comes the directory listing');
+                    if (dataSocket) {
+                        dataSocket.end('');
+                    }
+                    reply(226, 'Directory send OK');
+                    break;
+
+                case 'STOR': {
+                    const filename  = path.basename(arg || `recording_${Date.now()}.mp4`);
+                    uploadPath  = path.join('./recordings', filename);
+                    uploadStream = fs.createWriteStream(uploadPath);
+                    console.log(`[FTP] STOR starting — file:${uploadPath}`);
+                    reply(150, 'Ok to send data');
+
+                    const waitForData = setInterval(() => {
+                        if (dataSocket) {
+                            clearInterval(waitForData);
+                            dataSocket.pipe(uploadStream);
+                            dataSocket.on('end', () => {
+                                uploadStream.end();
+                                console.log(`[FTP] ✅ Upload complete: ${uploadPath}`);
+                                reply(226, 'Transfer complete');
+                                // Notify all browsers
+                                const fname = path.basename(uploadPath);
+                                wss.clients.forEach(c => {
+                                    if (c.readyState === 1) c.send(JSON.stringify({
+                                        type:     'recording_ready',
+                                        url:      `/recordings/${fname}`,
+                                        filename: fname,
+                                    }));
+                                });
+                                dataSocket = null;
+                            });
+                            dataSocket.on('error', err => {
+                                console.error('[FTP] Data socket error:', err.message);
+                                reply(426, 'Connection closed, transfer aborted');
+                            });
+                        }
+                    }, 100);
+                    break;
+                }
+
+                case 'QUIT':
+                    reply(221, 'Goodbye');
+                    ftpSocket.end();
+                    break;
+
+                case 'NOOP':
+                    reply(200, 'OK');
+                    break;
+
+                case 'FEAT':
+                    ftpSocket.write('211-Features:\r\n211 End\r\n');
+                    break;
+
+                default:
+                    reply(202, 'Command not implemented');
+            }
+        });
     });
-});
 
-ftpServer.on('PASV', ({ connection }) => {
-    console.log(`[FTP] PASV requested by ${connection.ip}`);
-});
+    ftpSocket.on('close', () => {
+        console.log(`[FTP] Client disconnected: ${clientIp}`);
+        if (dataServer) { try { dataServer.close(); } catch(_){} }
+        if (uploadStream) { try { uploadStream.end(); } catch(_){} }
+    });
 
-ftpServer.on('STOR', ({ connection, filePath }) => {
-    console.log(`[FTP] STOR started — file:${filePath} from:${connection.ip}`);
-});
+    ftpSocket.on('error', err => console.error('[FTP] Socket error:', err.message));
 
-ftpServer.listen().then(() => console.log('✓ FTP server on :2121'));
+}).listen(FTP_PORT, () => console.log(`✓ FTP server on :${FTP_PORT} (PASV only)`));
 
 
 // ── WebSocket server ──────────────────────────────────────────────────────────
