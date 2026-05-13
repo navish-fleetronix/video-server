@@ -27,12 +27,15 @@ const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
 // Built-in FTP server so device can upload recordings to us
 // npm install ftp-srv  ←  run this once
 const FtpSrv = require('ftp-srv');
-const ftpServer = new FtpSrv({
-    url:       `ftp://0.0.0.0:2121`,
-    pasv_url:  '20.244.41.46',   // hardcode public IP — Azure VMs have internal IP on interface
+const ftpServer = new ftpSrv({
+    url:       'ftp://0.0.0.0:2121',
+    pasv_url:  () => '20.244.41.46',
     pasv_min:  3500,
     pasv_max:  3600,
     anonymous: true,
+    greeting:  'FTP Server Ready',
+    tls:       false,
+    epsv:      false,   // ← disable EPSV, force old-style PASV (227) for device compatibility
 });
 
 ftpServer.on('login', ({ connection, username, password }, resolve, reject) => {
