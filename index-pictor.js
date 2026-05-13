@@ -29,12 +29,10 @@ const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
 const FtpSrv = require('ftp-srv');
 const ftpServer = new FtpSrv({
     url:       `ftp://0.0.0.0:2121`,
-    pasv_url:  process.env.SERVER_IP,
+    pasv_url:  '20.244.41.46',   // hardcode public IP — Azure VMs have internal IP on interface
     pasv_min:  3500,
     pasv_max:  3600,
     anonymous: true,
-    greeting:  'FTP Server Ready',
-    tls:       false,
 });
 
 ftpServer.on('login', ({ connection, username, password }, resolve, reject) => {
