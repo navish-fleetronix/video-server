@@ -33,25 +33,24 @@ const ftpServer = new FtpSrv({
     pasv_min:  3500,
     pasv_max:  3600,
     anonymous: true,
+    log:       require('bunyan').createLogger({ name: 'ftp', level: 'trace' }),
 });
-if (!fs.existsSync('./recordings')) fs.mkdirSync('./recordings');
 
 ftpServer.on('login', ({ connection, username, password }, resolve, reject) => {
-    console.log(`[FTP] Login attempt — user:"${username}" pass:"${password}" from:${connection.ip}`);
+    console.log(`[FTP] ✅ Login — user:"${username}" ip:${connection.ip}`);
     resolve({ root: path.resolve('./recordings') });
 });
 
-ftpServer.on('disconnect', ({ connection }) => {
-    console.log(`[FTP] Client disconnected: ${connection.ip}`);
+ftpServer.on('disconnect', ({ connection, isBadSequence }) => {
+    console.log(`[FTP] Disconnected ip:${connection.ip} badSeq:${isBadSequence}`);
 });
 
 ftpServer.on('client-error', ({ connection, context, error }) => {
-    console.error(`[FTP] Client error from ${connection.ip}:`, error.message, 'context:', context);
+    console.error(`[FTP] ❌ Client error ip:${connection.ip} ctx:${context} err:${error.message}`);
 });
 
 ftpServer.on('upload-end', ({ filePath }) => {
-    console.log('[FTP] Upload complete:', filePath);
-    // Notify all browsers that a new file is ready
+    console.log('[FTP] ✅ Upload complete:', filePath);
     const filename = path.basename(filePath);
     wss.clients.forEach(c => {
         if (c.readyState === 1) c.send(JSON.stringify({
