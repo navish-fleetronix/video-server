@@ -436,7 +436,7 @@ function handleVideoFrame(frameData, channel, dataType) {
         console.log(`ch${channel} ✅ I_FRAME size:${frameData.length}`);
     } else {
         if (!ch.gotIFrame) return;  // drop P/B until first I-frame
-        console.log(`ch${channel} ${dataType === 1 ? 'P' : 'B'}_FRAME size:${frameData.length}`);
+        //console.log(`ch${channel} ${dataType === 1 ? 'P' : 'B'}_FRAME size:${frameData.length}`);
     }
 
     if (!ch.ffmpeg || !ch.ffmpeg.stdin.writable) return;
@@ -474,7 +474,7 @@ function processVideoPacket(rawData, channel, dataType, subpktMarker) {
             ch.subpackets.push(rawData);
             const complete = Buffer.concat(ch.subpackets);
             ch.subpackets  = [];
-            console.log(`ch${channel} complete frame size:${complete.length}`);
+            //console.log(`ch${channel} complete frame size:${complete.length}`);
             handleVideoFrame(complete, channel, dataType);
         }
     }
