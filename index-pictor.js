@@ -646,14 +646,14 @@ function buildFtpUploadRequest(phone, channel, startTime, endTime) {
     body[p++] = l;                               userBuf.copy(body, p); p += l;
     body[p++] = m;                               passBuf.copy(body, p); p += m;
     body[p++] = n;                               pathBuf.copy(body, p); p += n;
-    body[p++] = 0;
+    body[p++] = channel;
     toBCDBytes(sY%100,sM,sD,sH,sm,sS).copy(body, p); p += 6;
     toBCDBytes(eY%100,eM,eD,eH,em,eS).copy(body, p); p += 6;
     body.fill(0x00, p, p+8);                     p += 8; // no alarm filter
     body[p++] = 2;  // avType: video only
     body[p++] = 0;  // all streams
     body[p++] = 0;  // all storage
-    body[p++] = 0b00000111; // task condition: bit2=1 = allow on 4G
+    body[p++] = 0b00000100; // task condition: bit2=1 = allow on 4G
 
     console.log(`[Rec] buildFtpUploadRequest ch:${channel} ${startTime}→${endTime}`);
     return buildFrame(0x9206, body, phone);
