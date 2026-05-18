@@ -313,8 +313,8 @@ function startFFmpeg(phone, channel) {
         '-fflags',          '+genpts+discardcorrupt+igndts',
         '-err_detect',      'ignore_err',
         '-f',               'mpegts',
-        '-probesize',       '2000000',
-        '-analyzeduration', '3000000',
+        '-probesize',       '500000',
+        '-analyzeduration', '1000000',
         '-i',               'pipe:0',
         '-c:v',             'libx264',
         '-preset',          'ultrafast',
@@ -354,15 +354,12 @@ function getOrCreateStream(phone, channel) {
     const key = streamKey(phone, channel);
     if (!deviceStreams[key]) {
         console.log(`[Stream] Creating new stream for ${key}`);
-        console.log(`[Stream] Creating new stream for ${key}`);
         deviceStreams[key] = {
-            ffmpeg:      null,          // started after codec detection
+            ffmpeg:      startFFmpeg(phone, channel),
             gotIFrame:   false,
             subpackets:  [],
             patPmtSent:  false,
             tsCounter:   0,
-            codec:       null,
-            codecDetected: false,
         };
         broadcastDeviceList();
     }
@@ -413,7 +410,7 @@ function buildPAT() {
     return pkt;
 }
 
-function buildPMT(streamType = 0x42) {
+function buildPMT() {
     const pkt = Buffer.alloc(TS_PACKET_SIZE, 0xFF);
     pkt[0] = 0x47;
     pkt[1] = 0x40 | ((PMT_PID >> 8) & 0x1F);
@@ -430,7 +427,7 @@ function buildPMT(streamType = 0x42) {
     s[9]  = VIDEO_PID & 0xFF;  // PCR PID = VIDEO_PID
     s[10] = 0xF0; s[11] = 0x00;// no program_info
     // Stream descriptor
-    s[12] = streamType;              // stream_type: AVS (GB/T 20090-1, ISO 13818-1 user private 0x42)
+    s[12] = 0x42;              // stream_type: AVS (GB/T 20090-1, ISO 13818-1 user private 0x42)
     s[13] = 0xE0 | ((VIDEO_PID >> 8) & 0x1F);
     s[14] = VIDEO_PID & 0xFF;  // elementary PID
     s[15] = 0xF0; s[16] = 0x00;// no ES_info
@@ -476,45 +473,27 @@ function wrapFrameInTS(frameData, counter) {
 // ── Handle one complete video frame ──────────────────────────────────────────
 function handleVideoFrame(frameData, phone, channel, dataType) {
     const stream = getOrCreateStream(phone, channel);
-    const key    = streamKey(phone, channel);
 
     const isVideo = (dataType === 0 || dataType === 1 || dataType === 2);
     if (!isVideo) return;
 
+    const key = streamKey(phone, channel);
     if (dataType === 0) {
         stream.gotIFrame = true;
-
-        // ── Detect codec from I-frame NAL header ──────────────────────────
-        // HEVC starts with 0x00 0x00 0x00 0x01 0x40 or 0x42 (VPS/SPS NAL types)
-        // AVS/H.264 starts with 0x00 0x00 0x00 0x01 0x67 or similar
-        if (!stream.codecDetected) {
-            const b4 = frameData[4];
-            const isHEVC = (b4 === 0x40 || b4 === 0x42 || b4 === 0x44 || b4 === 0x4e);
-            stream.codec = isHEVC ? 'hevc' : 'avs';
-            stream.codecDetected = true;
-            console.log(`${key} 🎥 Codec detected: ${stream.codec} (NAL byte: 0x${b4.toString(16)})`);
-        }
-
         console.log(`${key} ✅ I_FRAME size:${frameData.length}`);
     } else {
-        if (!stream.gotIFrame) return;
+        if (!stream.gotIFrame) return; // drop P/B until first I-frame
         console.log(`${key} ${dataType === 1 ? 'P' : 'B'}_FRAME size:${frameData.length}`);
     }
 
     if (!stream.ffmpeg || !stream.ffmpeg.stdin.writable) return;
 
-    // Send PAT+PMT once — use correct stream type for detected codec
+    // Send PAT+PMT once per stream
     if (!stream.patPmtSent) {
-        if (!stream.codec && dataType === 0 && frameData.length > 4) {
-            const nalByte = frameData[4];
-            stream.codec = (nalByte === 0x40 || nalByte === 0x42 || nalByte === 0x44) ? 'hevc' : 'avs';
-            console.log(`${key} 🎥 Codec: ${stream.codec} (NAL=0x${nalByte.toString(16)})`);
-        }
-        const streamType = (stream.codec === 'hevc') ? 0x24 : 0x42;
         stream.ffmpeg.stdin.write(buildPAT());
-        stream.ffmpeg.stdin.write(buildPMT(streamType));
+        stream.ffmpeg.stdin.write(buildPMT());
         stream.patPmtSent = true;
-        console.log(`${key} 📺 Sent PAT+PMT streamType=0x${streamType.toString(16)}`);
+        console.log(`${key} 📺 Sent PAT+PMT (AVS stream type 0x42)`);
     }
 
     const { packets, nextCounter } = wrapFrameInTS(frameData, stream.tsCounter);
@@ -601,7 +580,6 @@ function buildRegisterResponse(phone, replySeq, result, authCode) {
 }
 
 function buildVideoRequest(phone, serverIp, serverPort, channel) {
-    console.log(`[Req] buildVideoRequest: ${phone} → ${serverIp}:${serverPort} ch:${channel}`);
     const ipBuf = Buffer.from(serverIp, 'ascii');
     const N     = ipBuf.length;
     const body  = Buffer.alloc(8 + N);
@@ -762,10 +740,9 @@ const tcpServer = net.createServer(socket => {
                     // if (!phone) console.log('[StreamHdr]', buffer.slice(offset, offset + 30).toString('hex'));
 
                     const streamPhone = phone || buffer.slice(offset + 8, offset + 13)
-                        .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`).join('').replace(/^0+/, '');
-                    processVideoPacket(rawData, streamPhone, channel, dataType, subpktMarker);
-                    // TEMPORARY — log codec byte
-                    console.log(`[Codec] ${streamPhone} byte5=0x${buffer[offset+5].toString(16)} byte13=0x${buffer[offset+13].toString(16)}`);
+    .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`).join('').replace(/^0+/, '');
+processVideoPacket(rawData, streamPhone, channel, dataType, subpktMarker);
+
                     offset += 30 + dataBodyLen;
                     continue;
                 }
