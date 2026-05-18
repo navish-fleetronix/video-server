@@ -410,7 +410,7 @@ function buildPAT() {
     return pkt;
 }
 
-function buildPMT() {
+function buildPMT(streamType = 0x42) {
     const pkt = Buffer.alloc(TS_PACKET_SIZE, 0xFF);
     pkt[0] = 0x47;
     pkt[1] = 0x40 | ((PMT_PID >> 8) & 0x1F);
@@ -427,7 +427,7 @@ function buildPMT() {
     s[9]  = VIDEO_PID & 0xFF;  // PCR PID = VIDEO_PID
     s[10] = 0xF0; s[11] = 0x00;// no program_info
     // Stream descriptor
-    s[12] = 0x42;              // stream_type: AVS (GB/T 20090-1, ISO 13818-1 user private 0x42)
+    s[12] = streamType;              // stream_type: AVS (GB/T 20090-1, ISO 13818-1 user private 0x42)
     s[13] = 0xE0 | ((VIDEO_PID >> 8) & 0x1F);
     s[14] = VIDEO_PID & 0xFF;  // elementary PID
     s[15] = 0xF0; s[16] = 0x00;// no ES_info
@@ -473,27 +473,40 @@ function wrapFrameInTS(frameData, counter) {
 // ── Handle one complete video frame ──────────────────────────────────────────
 function handleVideoFrame(frameData, phone, channel, dataType) {
     const stream = getOrCreateStream(phone, channel);
+    const key    = streamKey(phone, channel);
 
     const isVideo = (dataType === 0 || dataType === 1 || dataType === 2);
     if (!isVideo) return;
 
-    const key = streamKey(phone, channel);
     if (dataType === 0) {
         stream.gotIFrame = true;
+
+        // ── Detect codec from I-frame NAL header ──────────────────────────
+        // HEVC starts with 0x00 0x00 0x00 0x01 0x40 or 0x42 (VPS/SPS NAL types)
+        // AVS/H.264 starts with 0x00 0x00 0x00 0x01 0x67 or similar
+        if (!stream.codecDetected) {
+            const b4 = frameData[4];
+            const isHEVC = (b4 === 0x40 || b4 === 0x42 || b4 === 0x44 || b4 === 0x4e);
+            stream.codec = isHEVC ? 'hevc' : 'avs';
+            stream.codecDetected = true;
+            console.log(`${key} 🎥 Codec detected: ${stream.codec} (NAL byte: 0x${b4.toString(16)})`);
+        }
+
         console.log(`${key} ✅ I_FRAME size:${frameData.length}`);
     } else {
-        if (!stream.gotIFrame) return; // drop P/B until first I-frame
+        if (!stream.gotIFrame) return;
         console.log(`${key} ${dataType === 1 ? 'P' : 'B'}_FRAME size:${frameData.length}`);
     }
 
     if (!stream.ffmpeg || !stream.ffmpeg.stdin.writable) return;
 
-    // Send PAT+PMT once per stream
+    // Send PAT+PMT once — use correct stream type for detected codec
     if (!stream.patPmtSent) {
+        const streamType = (stream.codec === 'hevc') ? 0x24 : 0x42; // 0x24=HEVC, 0x42=AVS
         stream.ffmpeg.stdin.write(buildPAT());
-        stream.ffmpeg.stdin.write(buildPMT());
+        stream.ffmpeg.stdin.write(buildPMT(streamType));
         stream.patPmtSent = true;
-        console.log(`${key} 📺 Sent PAT+PMT (AVS stream type 0x42)`);
+        console.log(`${key} 📺 Sent PAT+PMT streamType=0x${streamType.toString(16)}`);
     }
 
     const { packets, nextCounter } = wrapFrameInTS(frameData, stream.tsCounter);
