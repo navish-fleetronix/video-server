@@ -25,6 +25,7 @@ if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 const tcpSockets      = {}; // { [phone]: socket }
 const socketToPhone   = new WeakMap(); // { socket → phone } // { [phone]: socket }
 const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
+const deviceImei      = {}; // { [phone]: imeiString }
 
 // Built-in FTP server so device can upload recordings to us
 // npm install ftp-srv  ←  run this once
@@ -302,7 +303,7 @@ http.createServer((req, res) => {
 const deviceStreams = {};
 
 function streamKey(phone, channel) {
-    return `${phone}_ch${channel}`;
+    return `${phone}`;
 }
 
 function startFFmpeg(phone, channel) {
@@ -375,7 +376,7 @@ function broadcastDeviceList() {
     // Build per-phone stream list
     for (const key of Object.keys(deviceStreams)) {
         const [ph, chPart] = key.split('_ch');
-        if (!devices[ph]) devices[ph] = { phone: ph, channels: [] };
+        if (!devices[ph]) devices[ph] = { phone: ph, imei: deviceImei[ph] || null, channels: [] };
         devices[ph].channels.push(parseInt(chPart, 10));
     }
     const payload = JSON.stringify({ type: 'device_list', devices: Object.values(devices) });
@@ -772,7 +773,7 @@ const tcpServer = net.createServer(socket => {
                     // TEMPORARY: log header hex so we can find phone offset
                     // if (!phone) console.log('[StreamHdr]', buffer.slice(offset, offset + 30).toString('hex'));
 
-                    const streamPhone = phone || buffer.slice(offset + 8, offset + 13)
+                    const streamPhone = phone || buffer.slice(offset + 8, offset + 14)
                         .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`).join('').replace(/^0+/, '');
                     processVideoPacket(rawData, streamPhone, channel, dataType, subpktMarker);
                     // TEMPORARY — log codec byte
@@ -814,6 +815,30 @@ const tcpServer = net.createServer(socket => {
                         tcpSockets[phone] = socket;
                         socketToPhone.set(socket, phone);   // ← ADD THIS
                         socket.write(buildRegisterResponse(phone, seq, 0, 'AUTH1234'));
+
+                        // JT/T 808 §2.4.4: 0x0100 body layout:
+                        // bytes 0-1:  province id
+                        // bytes 2-3:  city id
+                        // bytes 4-12: manufacturer id (5 bytes)  ← actually offset 4, len 5
+                        // bytes 9-28: device model (20 bytes)
+                        // bytes 29-36: device id / IMEI (7 bytes BCD = 15 digits, or ASCII)
+                        // Many real devices put the IMEI at bytes 4–18 as ASCII.
+                        // Try ASCII first (printable), fall back to BCD.
+                        if (body.length >= 19) {
+                            const imeiAscii = body.slice(4, 19).toString('ascii').replace(/[^\d]/g, '');
+                            const imeiBcd   = body.slice(4, 12)
+                                .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`).join('').replace(/^0+/, '').slice(0, 15);
+                            // Use whichever looks like a valid 15-digit IMEI
+                            const imei = /^\d{15}$/.test(imeiAscii) ? imeiAscii
+                                       : /^\d{14,15}$/.test(imeiBcd) ? imeiBcd
+                                       : imeiAscii || imeiBcd;
+                            deviceImei[phone] = imei;
+                            console.log(`[Reg] IMEI for ${phone}: ${imei}`);
+                            // Broadcast IMEI to all browsers
+                            wss.clients.forEach(c => {
+                                if (c.readyState === 1) c.send(JSON.stringify({ type: 'imei', phone, imei }));
+                            });
+                        }
 
                     } else if (msgId === 0x0102) {
                         socket.write(buildAck(phone, seq, msgId));
