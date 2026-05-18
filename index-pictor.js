@@ -784,10 +784,9 @@ processVideoPacket(rawData, streamPhone, channel, dataType, subpktMarker);
                     } else if (msgId === 0x0102) {
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
-                        const socketToPhone = new WeakMap();
                         tcpSockets[phone] = socket;
-                        socketToPhone.set(socket, phone); 
-                        console.log(`[signalling] Registered socket for ${phone}`);
+                        socketToPhone.set(socket, phone);
+                        broadcastDeviceList();   // ← ADD THIS so browser creates the panel immediately
                         // Step 1: param query handshake (required before 0x9205 on SDK V6.07)
                         setTimeout(() => {
                             if (!socket.destroyed) {
