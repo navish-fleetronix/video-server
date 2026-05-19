@@ -24,6 +24,7 @@ if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 // ── Device state & FTP ───────────────────────────────────────────────────────
 const tcpSockets      = {}; // { [phone]: socket }
 const deviceRecordings= {}; // { [phone]: [{ch,startTime,endTime,size}] }
+const activeDownloads = {}; // { [phone]: { writeStream, filename, channel } }
 
 // Built-in FTP server so device can upload recordings to us
 // npm install ftp-srv  ←  run this once
@@ -278,11 +279,20 @@ wss.on('connection', (ws, req) => {
             }
             const frame = buildFtpUploadRequest(targetPhone, ch, startTime, endTime);
             console.log(`[WS] Sending 0x9206 frame:`, frame.toString('hex'));
+        
+            // Set up file capture BEFORE sending the command
+            const fname    = `ch${ch}_${startTime.replace(/[: -]/g, '')}.mp4`;
+            const fpath    = `./recordings/${fname}`;
+            const wStream  = fs.createWriteStream(fpath);
+            activeDownloads[targetPhone] = { writeStream: wStream, filename: fname, channel: ch };
+            console.log(`[Rec] ⏺ Capturing recording to ${fpath}`);
+        
+            wStream.on('error', err => {
+                console.error('[Rec] Write error:', err.message);
+            });
+        
             tcpSockets[targetPhone].write(frame);
-            // tcpSockets[targetPhone].write(
-            //     buildFtpUploadRequest(targetPhone, ch, startTime, endTime)
-            // );
-            ws.send(JSON.stringify({ type: 'status', message: '⏳ Device uploading to FTP... please wait' }));
+            ws.send(JSON.stringify({ type: 'status', message: '⏳ Device sending recording... please wait' }));
         }
     });
 
@@ -732,19 +742,28 @@ const tcpServer = net.createServer(socket => {
                 // ── Stream data packet (T/98 §5.5.3 — 0x30316364 header) ────
                 if (buffer[offset]   === 0x30 && buffer[offset+1] === 0x31 &&
                     buffer[offset+2] === 0x63 && buffer[offset+3] === 0x64) {
-
+            
                     if (offset + 30 > buffer.length) break;
                     const dataBodyLen = buffer.readUInt16BE(offset + 28);
                     if (offset + 30 + dataBodyLen > buffer.length) break;
-
+            
                     const byte15       = buffer[offset + 15];
-                    const dataType     = (byte15 >> 4) & 0x0F; // upper nibble
-                    const subpktMarker = byte15 & 0x0F;         // lower nibble
+                    const dataType     = (byte15 >> 4) & 0x0F;
+                    const subpktMarker = byte15 & 0x0F;
                     const channel      = buffer[offset + 14];
                     const rawData      = buffer.slice(offset + 30, offset + 30 + dataBodyLen);
-
-                    processVideoPacket(rawData, channel, dataType, subpktMarker);
-
+            
+                    // ── If a download is active for this phone, capture to file ──────
+                    const dl = activeDownloads[phone];
+                    if (dl && dl.writeStream) {
+                        // Write the raw body data to the recording file
+                        dl.writeStream.write(rawData);
+                        console.log(`[Rec] ⏺ Wrote ${rawData.length} bytes to ${dl.filename}`);
+                    } else {
+                        // Normal live stream — send to FFmpeg
+                        processVideoPacket(rawData, channel, dataType, subpktMarker);
+                    }
+            
                     offset += 30 + dataBodyLen;
                     continue;
                 }
@@ -945,9 +964,23 @@ const tcpServer = net.createServer(socket => {
                         console.log(`[Rec] 0x1206 replySerial:${replySerial} result:${result} (${resultMsg})`);
 
                         if (result === 0) {
-                            console.log(`[Rec] ✅ FTP upload succeeded for ${phone}`);
-                            // File is now in ./recordings/ — FTP upload-end event will notify browser
-                        } else {
+                                console.log(`[Rec] ✅ Device finished sending recording for ${phone}`);
+                    
+                                const dl = activeDownloads[phone];
+                                if (dl && dl.writeStream) {
+                                    dl.writeStream.end(() => {
+                                        console.log(`[Rec] ✅ File saved: ${dl.filename}`);
+                                        wss.clients.forEach(c => {
+                                            if (c.readyState === 1) c.send(JSON.stringify({
+                                                type:     'recording_ready',
+                                                url:      `/recordings/${dl.filename}`,
+                                                filename: dl.filename,
+                                            }));
+                                        });
+                                        delete activeDownloads[phone];
+                                    });
+                                }
+                            } else {
                             console.error(`[Rec] ❌ FTP upload FAILED for ${phone} result:${result}`);
 
                             // Common reasons:
