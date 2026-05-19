@@ -107,6 +107,7 @@ net.createServer(ftpSocket => {
                         console.log(`[FTP] Data connection from ${s.remoteAddress}:${s.remotePort}`);
                         dataSocket = s;
                     });
+                    dataServer.on('error', err => console.error('[FTP] PASV server error:', err.message));
                     dataServer.listen(port, '0.0.0.0', () => {
                         // PASV response: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
                         const ipParts = PUBLIC_IP.split('.');
@@ -148,6 +149,7 @@ net.createServer(ftpSocket => {
                     };
 
                     const waitForData = setInterval(() => {
+                        console.log(`[FTP] Waiting for data connection... dataSocket=${!!dataSocket}`); 
                         if (!dataSocket) return;
                         clearInterval(waitForData);
 
