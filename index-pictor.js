@@ -254,14 +254,20 @@ wss.on('connection', (ws, req) => {
             const { ch, startTime, endTime, phone: reqPhone } = msg;
             const targetPhone = reqPhone || Object.keys(tcpSockets)[0];
             console.log(`[WS] download_recording ch:${ch} ${startTime}→${endTime} phone:${targetPhone}`);
+            console.log(`[WS] tcpSockets keys:`, Object.keys(tcpSockets));          // ADD
+            console.log(`[WS] socket exists:`, !!tcpSockets[targetPhone]);           // ADD
+            console.log(`[WS] socket destroyed:`, tcpSockets[targetPhone]?.destroyed); // ADD
 
             if (!targetPhone || !tcpSockets[targetPhone] || tcpSockets[targetPhone].destroyed) {
                 ws.send(JSON.stringify({ type: 'error', message: 'Device not connected' }));
                 return;
             }
-            tcpSockets[targetPhone].write(
-                buildFtpUploadRequest(targetPhone, ch, startTime, endTime)
-            );
+            const frame = buildFtpUploadRequest(targetPhone, ch, startTime, endTime);
+            console.log(`[WS] Sending 0x9206 frame:`, frame.toString('hex'));
+            tcpSockets[targetPhone].write(frame);
+            // tcpSockets[targetPhone].write(
+            //     buildFtpUploadRequest(targetPhone, ch, startTime, endTime)
+            // );
             ws.send(JSON.stringify({ type: 'status', message: '⏳ Device uploading to FTP... please wait' }));
         }
     });
