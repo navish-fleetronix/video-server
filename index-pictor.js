@@ -284,7 +284,35 @@ wss.on('connection', (ws, req) => {
             const fname    = `ch${ch}_${startTime.replace(/[: -]/g, '')}.mp4`;
             const fpath    = `./recordings/${fname}`;
             const wStream  = fs.createWriteStream(fpath);
-            activeDownloads[targetPhone] = { writeStream: wStream, filename: fname, channel: ch };
+            
+            
+
+            let dlTimer = null;
+const dlEntry = { writeStream: wStream, filename: fname, channel: ch };
+activeDownloads[targetPhone] = dlEntry;
+
+// Auto-close if no data received for 5 seconds — device doesn't always send 0x1206
+dlEntry.resetTimer = () => {
+    if (dlTimer) clearTimeout(dlTimer);
+    dlTimer = setTimeout(() => {
+        console.log(`[Rec] ⏹ No data for 5s — closing ${fname}`);
+        wStream.end(() => {
+            console.log(`[Rec] ✅ File saved: ${fname}`);
+            wss.clients.forEach(c => {
+                if (c.readyState === 1) c.send(JSON.stringify({
+                    type:     'recording_ready',
+                    url:      `/recordings/${fname}`,
+                    filename: fname,
+                }));
+            });
+            delete activeDownloads[targetPhone];
+        });
+    }, 5000);
+};
+dlEntry.resetTimer(); // start the timer immediately
+
+
+
             console.log(`[Rec] ⏺ Capturing recording to ${fpath}`);
         
             wStream.on('error', err => {
@@ -759,6 +787,7 @@ const tcpServer = net.createServer(socket => {
                     // const dl = activeDownloads[streamPhone];
                     if (dl && dl.writeStream && dl.writeStream.writable) {
                         dl.writeStream.write(Buffer.from(rawData));
+                        if (dl.resetTimer) dl.resetTimer(); // reset the 5s inactivity timer
                         console.log(`[Rec] ⏺ ${effectivePhone} wrote ${rawData.length} bytes → ${dl.filename}`);
                     } else {
                         processVideoPacket(rawData, channel, dataType, subpktMarker);
