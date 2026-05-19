@@ -503,7 +503,13 @@ function buildFrame(msgId, body, phone) {
     const header = Buffer.alloc(12);
     header.writeUInt16BE(msgId,       0);
     header.writeUInt16BE(body.length, 2);
-    Buffer.from(phone.match(/.{2}/g).map(h => parseInt(h, 16))).copy(header, 4);
+
+    // BCD-encode phone padded to 12 digits
+    const phoneStr = String(phone).padStart(12, '0');
+    Buffer.from(phoneStr.match(/.{2}/g)
+        .map(v => { const n = parseInt(v,10); return ((Math.floor(n/10)<<4)|(n%10)); })
+    ).copy(header, 4);
+
     header.writeUInt16BE(Math.floor(Math.random() * 0xFFFF), 10);
     const payload = Buffer.concat([header, body]);
     let cs = 0; payload.forEach(b => cs ^= b);
@@ -640,24 +646,24 @@ function buildFtpUploadRequest(phone, channel, startTime, endTime) {
     //                  logicalCh(1) startBCD(6) endBCD(6)
     //                  alarmLogo(8) avType(1) streamType(1) storageType(1) taskCondition(1)
     const k = ipBuf.length, l = userBuf.length, m = passBuf.length, n = pathBuf.length;
-    const body = Buffer.alloc(1+k+2+1+l+1+m+1+n+1+6+6+8+1+1+1+1);
+    const body = Buffer.alloc(1+k+2+2+1+l+1+m+1+n+1+6+6+8+1+1+1+1); // +2 for UDP port
     let p = 0;
     body[p++] = k;                               ipBuf.copy(body, p);   p += k;
-    body.writeUInt16BE(ftpPort, p);              p += 2;
+    body.writeUInt16BE(ftpPort, p);              p += 2;  // TCP port
+    body.writeUInt16BE(0,       p);              p += 2;  // UDP port (0)
     body[p++] = l;                               userBuf.copy(body, p); p += l;
     body[p++] = m;                               passBuf.copy(body, p); p += m;
     body[p++] = n;                               pathBuf.copy(body, p); p += n;
     body[p++] = channel;
     toBCDBytes(sY%100,sM,sD,sH,sm,sS).copy(body, p); p += 6;
     toBCDBytes(eY%100,eM,eD,eH,em,eS).copy(body, p); p += 6;
-    body.fill(0x00, p, p+8);                     p += 8; // no alarm filter
-    body[p++] = 2;  // avType: video only
-    body[p++] = 0;  // all streams
-    body[p++] = 0;  // all storage
-    body[p++] = 0b00000100; // task condition: bit2=1 = allow on 4G
+    body.fill(0x00, p, p+8);                     p += 8;
+    body[p++] = 2;
+    body[p++] = 0;
+    body[p++] = 0;
+    body[p++] = 0b00000100;
 
-    console.log(`[Rec] buildFtpUploadRequest ch:${channel} ${startTime}→${endTime}`);
-    let frame = buildFrame(0x9206, body, "5760064474");
+    let frame = buildFrame(0x9206, body, phone);  // ← use phone parameter
     console.log(`[Rec] FTP upload request frame size: ${frame.length} bytes`);
     console.log(`[Rec] Frame hex: ${frame.toString('hex')}`);
     return frame;
