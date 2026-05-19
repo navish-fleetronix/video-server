@@ -127,36 +127,49 @@ net.createServer(ftpSocket => {
                     break;
 
                 case 'STOR': {
-                    const filename  = path.basename(arg || `recording_${Date.now()}.mp4`);
-                    uploadPath  = path.join('./recordings', filename);
+                    const filename   = path.basename(arg || `recording_${Date.now()}.mp4`);
+                    uploadPath   = path.join('./recordings', filename);
                     uploadStream = fs.createWriteStream(uploadPath);
                     console.log(`[FTP] STOR starting — file:${uploadPath}`);
                     reply(150, 'Ok to send data');
 
+                    const notifyBrowser = () => {
+                        const fname = path.basename(uploadPath);
+                        console.log(`[FTP] ✅ Upload complete: ${uploadPath}`);
+                        reply(226, 'Transfer complete');
+                        wss.clients.forEach(c => {
+                            if (c.readyState === 1) c.send(JSON.stringify({
+                                type:     'recording_ready',
+                                url:      `/recordings/${fname}`,
+                                filename: fname,
+                            }));
+                        });
+                        dataSocket = null;
+                    };
+
                     const waitForData = setInterval(() => {
-                        if (dataSocket) {
-                            clearInterval(waitForData);
-                            dataSocket.pipe(uploadStream);
-                            dataSocket.on('end', () => {
-                                uploadStream.end();
-                                console.log(`[FTP] ✅ Upload complete: ${uploadPath}`);
-                                reply(226, 'Transfer complete');
-                                // Notify all browsers
-                                const fname = path.basename(uploadPath);
-                                wss.clients.forEach(c => {
-                                    if (c.readyState === 1) c.send(JSON.stringify({
-                                        type:     'recording_ready',
-                                        url:      `/recordings/${fname}`,
-                                        filename: fname,
-                                    }));
-                                });
-                                dataSocket = null;
-                            });
-                            dataSocket.on('error', err => {
-                                console.error('[FTP] Data socket error:', err.message);
-                                reply(426, 'Connection closed, transfer aborted');
-                            });
-                        }
+                        if (!dataSocket) return;
+                        clearInterval(waitForData);
+
+                        dataSocket.pipe(uploadStream);
+
+                        // 'finish' fires after all data is flushed to disk
+                        uploadStream.on('finish', notifyBrowser);
+
+                        // 'end' fires when device closes data connection gracefully
+                        dataSocket.on('end', () => {
+                            uploadStream.end();
+                        });
+
+                        // 'close' fires whether end was graceful or abrupt — safety net
+                        dataSocket.on('close', () => {
+                            uploadStream.end();  // safe to call twice — WriteStream ignores it
+                        });
+
+                        dataSocket.on('error', err => {
+                            console.error('[FTP] Data socket error:', err.message);
+                            reply(426, 'Connection closed, transfer aborted');
+                        });
                     }, 100);
                     break;
                 }
