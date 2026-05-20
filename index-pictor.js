@@ -415,8 +415,8 @@ function startRecFFmpeg(phone, channel) {
         '-keyint_min',      '25',
         '-f',               'hls',
         '-hls_time',        '1',
-        '-hls_list_size',   '10',
-        '-hls_flags',       'delete_segments+append_list',
+        '-hls_list_size',   '0',
+        '-hls_flags',       'append_list',
         '-hls_segment_filename', `./public/rec_${phone}_%03d.ts`,
         `./public/rec_${phone}.m3u8`,
     ]);

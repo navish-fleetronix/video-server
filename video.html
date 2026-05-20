@@ -319,6 +319,7 @@
     }
 
     function playFile(url, title) {
+        console.log('[playFile] URL:', url);
         const modal = document.getElementById('videoModal');
         const video = document.getElementById('modalVideo');
         const titleEl = document.getElementById('modalTitle');
@@ -326,6 +327,32 @@
         modal.classList.add('active');
 
         if (window._recHls) { window._recHls.destroy(); window._recHls = null; }
+
+        // Wait for manifest to exist then load from beginning
+        document.getElementById('recStatus').textContent = '⏳ Loading segments...';
+        let attempts = 0;
+        const tryLoad = () => {
+            fetch(url + '?t=' + Date.now())
+                .then(r => r.text())
+                .then(m3u8 => {
+                    const segments = (m3u8.match(/\.ts/g) || []).length;
+                    console.log('[playFile] segments in playlist:', segments);
+                    if (segments < 3 && attempts++ < 20) {
+                        setTimeout(tryLoad, 1000);
+                        return;
+                    }
+                    document.getElementById('recStatus').textContent = '✅ Playing';
+                    _loadHls(url, video);
+                })
+                .catch(() => {
+                    if (attempts++ < 20) setTimeout(tryLoad, 1000);
+                });
+        };
+        tryLoad();
+        return;
+    }
+
+    function _loadHls(url, video) {
         document.getElementById('recStatus').textContent = '⏳ Waiting for stream...';
         // Poll until manifest exists before loading HLS
         let pollCount = 0;
@@ -347,25 +374,28 @@
     function _loadHls(url, video) {
         if (url.endsWith('.m3u8') && Hls.isSupported()) {
             const hls = new Hls({
-                lowLatencyMode: false,
-                manifestLoadingMaxRetry: 10,
-                manifestLoadingRetryDelay: 1000,
+                lowLatencyMode:              false,
+                manifestLoadingMaxRetry:     5,
+                manifestLoadingRetryDelay:   1000,
+                startPosition:               0,
             });
             window._recHls = hls;
             hls.loadSource(url);
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                console.log('[RecHLS] Manifest loaded — playing');
+                console.log('[RecHLS] Manifest loaded, segments:', hls.levels);
+                video.currentTime = 0;
                 video.play();
             });
             hls.on(Hls.Events.ERROR, (e, d) => {
                 console.error('[RecHLS] Error:', d.type, d.details);
                 if (d.fatal) {
-                    document.getElementById('recStatus').textContent = '❌ Stream error: ' + d.details;
+                    document.getElementById('recStatus').textContent = '❌ ' + d.details;
                 }
             });
         } else {
             video.src = url;
+            video.currentTime = 0;
             video.play().catch(console.warn);
         }
     }
