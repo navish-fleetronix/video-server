@@ -139,7 +139,7 @@ function _build9206(phone, channel, startTime, endTime) {
     // Alarm logo — 8 bytes all 0 (no alarm filter)
     body.fill(0x00, p, p + 8);              p += 8;
     // avType: 0 = audio+video (camera decides), 2 = video only — use 2
-    body[p++] = 2;
+    body[p++] = 0;
     // streamType: 0 = main or sub, 1 = main, 2 = sub — use 1 (main)
     body[p++] = 1;
     // storageType: 0 = any, 1 = main, 2 = disaster — use 0
