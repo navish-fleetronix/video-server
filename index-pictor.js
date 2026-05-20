@@ -289,18 +289,38 @@ wss.on('connection', (ws, req) => {
                 ffmpeg: recFfmpeg, gotIFrame: false,
                 subpackets: [], tsCounter: 0, patPmtSent: false
             };
-            activeDownloads[targetPhone] = { channel: ch };
+            activeDownloads[targetPhone] = { channel: ch, active: true };
+
+            // Auto-deactivate after 5s of no new packets
+            let recInactiveTimer = null;
+            const resetRecTimer = () => {
+                if (recInactiveTimer) clearTimeout(recInactiveTimer);
+                recInactiveTimer = setTimeout(() => {
+                    console.log(`[Rec] ⏹ Inactivity — stopping rec capture for ${targetPhone}`);
+                    if (activeDownloads[targetPhone]) activeDownloads[targetPhone].active = false;
+                    if (recChannels[targetPhone]) {
+                        try { recChannels[targetPhone].ffmpeg.stdin.end(); } catch(_) {}
+                        delete recChannels[targetPhone];
+                    }
+                    delete activeDownloads[targetPhone];
+                }, 5000);
+            };
+            activeDownloads[targetPhone].resetTimer = resetRecTimer;
+            resetRecTimer();
             console.log(`[Rec] ⏺ Streaming recording via FFmpeg for ${targetPhone}`);
 
             tcpSockets[targetPhone].write(frame);
 
             // Notify browser immediately with the HLS URL
-            setTimeout(() => {
-                ws.send(JSON.stringify({
-                    type: 'recording_ready',
-                    url:  `/public/rec_${targetPhone}.m3u8`,
-                }));
-            }, 3000); // wait 3s for FFmpeg to produce first segment
+            // Notify browser after first segment is ready (~3s after first I-frame)
+            recChannels[targetPhone].onReady = () => {
+                setTimeout(() => {
+                    ws.send(JSON.stringify({
+                        type: 'recording_ready',
+                        url:  `/public/rec_${targetPhone}.m3u8`,
+                    }));
+                }, 2000);
+            };
             ws.send(JSON.stringify({ type: 'status', message: '⏳ Buffering recording...' }));
         }
     });
@@ -427,7 +447,13 @@ function handleRecFrame(frameData, phone, dataType) {
     if (!rc) return;
     const isVideo = (dataType === 0 || dataType === 1 || dataType === 2);
     if (!isVideo) return;
-    if (dataType === 0) { rc.gotIFrame = true; }
+    if (dataType === 0) {
+        if (!rc.gotIFrame && rc.onReady) {
+            rc.onReady(); // fire once on first I-frame
+            rc.onReady = null;
+        }
+        rc.gotIFrame = true;
+    }
     else if (!rc.gotIFrame) return;
     if (!rc.ffmpeg || !rc.ffmpeg.stdin.writable) return;
     if (!rc.patPmtSent) {
@@ -831,9 +857,16 @@ const tcpServer = net.createServer(socket => {
                     const rawData      = buffer.slice(offset + 30, offset + 30 + dataBodyLen);
 
                     const effectivePhone = phone || Object.keys(activeDownloads)[0];
-                    const dl = effectivePhone ? activeDownloads[effectivePhone] : null;
+                    const isRec = effectivePhone &&
+                                  activeDownloads[effectivePhone] &&
+                                  activeDownloads[effectivePhone].active === true &&
+                                  recChannels[effectivePhone];
 
-                    if (dl && recChannels[effectivePhone]) {
+                    if (isRec) {
+                        // Reset inactivity timer on every packet
+                        if (activeDownloads[effectivePhone].resetTimer) {
+                            activeDownloads[effectivePhone].resetTimer();
+                        }
                         processRecPacket(rawData, effectivePhone, dataType, subpktMarker);
                     } else {
                         processVideoPacket(rawData, channel, dataType, subpktMarker);
