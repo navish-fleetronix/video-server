@@ -52,16 +52,6 @@ const PASV_DATA_PORT = 2122;
 let pasvDataSocket = null;   // the one pending data connection slot
  
 const pasvServer = net.createServer(s => {
-    console.log(`[FTP] ✅ PASV data connection from ${s.remoteAddress}:${s.remotePort}`);
-    
-    // ADD THIS — see what the device actually sends:
-    s.on('data', d => {
-        console.log(`[FTP] PASV raw data (${d.length} bytes):`, d.slice(0, 64).toString('hex'));
-        console.log(`[FTP] PASV raw ascii:`, d.slice(0, 64).toString('ascii').replace(/[^\x20-\x7E]/g, '.'));
-    });
-    s.on('end',   () => console.log('[FTP] PASV connection ended'));
-    s.on('close', () => console.log('[FTP] PASV connection closed'));
-    
     pasvDataSocket = s;
 });
 pasvServer.listen(PASV_DATA_PORT, '0.0.0.0', () => {
@@ -70,27 +60,21 @@ pasvServer.listen(PASV_DATA_PORT, '0.0.0.0', () => {
 pasvServer.on('error', err => console.error('[FTP] PASV server error:', err.message));
  
 net.createServer(ftpSocket => {
-    const clientIp = ftpSocket.remoteAddress;
-    console.log(`[FTP] Client connected: ${clientIp}`);
     let dataSocket   = null;
     let uploadPath   = null;
     let uploadStream = null;
  
     const reply = (code, msg) => {
-        console.log(`[FTP] → ${code} ${msg}`);
         ftpSocket.write(`${code} ${msg}\r\n`);
     };
  
     reply(220, 'FTP Server Ready');
  
     ftpSocket.on('data', data => {
-         console.log(`[FTP RAW] received ${data.length} bytes from ${clientIp}:`, data.toString('hex'));
         const lines = data.toString().split('\r\n').filter(Boolean);
-        console.log(`[FTP] ← raw:`, data.toString().trim());
         lines.forEach(line => {
             const [cmd, ...args] = line.trim().split(' ');
             const arg = args.join(' ');
-            console.log(`[FTP] ← ${line.trim()}`);
  
             switch (cmd.toUpperCase()) {
                 case 'USER':
@@ -149,12 +133,10 @@ net.createServer(ftpSocket => {
                     const filename = path.basename(arg || `recording_${Date.now()}.mp4`);
                     uploadPath     = path.join('./recordings', filename);
                     uploadStream   = fs.createWriteStream(uploadPath);
-                    console.log(`[FTP] STOR starting — file: ${uploadPath}`);
                     reply(150, 'Ok to send data');
  
                     const notifyBrowser = () => {
                         const fname = path.basename(uploadPath);
-                        console.log(`[FTP] ✅ Upload complete: ${uploadPath}`);
                         reply(226, 'Transfer complete');
                         wss.clients.forEach(c => {
                             if (c.readyState === 1) c.send(JSON.stringify({
@@ -177,7 +159,6 @@ net.createServer(ftpSocket => {
                         if (!dataSocket) {
                             if (++tries > 100) {
                                 clearInterval(waitForData);
-                                console.error('[FTP] STOR timeout — no data connection in 10s');
                                 reply(425, 'No data connection established');
                             }
                             return;
@@ -217,7 +198,6 @@ net.createServer(ftpSocket => {
     });
  
     ftpSocket.on('close', () => {
-        console.log(`[FTP] Client disconnected: ${clientIp}`);
         if (uploadStream) { try { uploadStream.end(); } catch (_) {} }
     });
  
@@ -238,27 +218,22 @@ wss.on('connection', (ws, req) => {
             console.warn('[WS] Non-JSON message received:', raw.toString());
             return;
         }
-        console.log(`[WS] Message from browser: type=${msg.type}`, msg);
-
         // ── query_recordings: return cached list filtered by date ─────────
         if (msg.type === 'query_recordings') {
             const { startDate, endDate } = msg;
             let all = Object.values(deviceRecordings).flat();
-            console.log(`[WS] query_recordings total in store:${all.length} from:${startDate} to:${endDate}`);
             const startPrefix = startDate ? startDate.split(' ')[0] : null;
             const endPrefix   = endDate   ? endDate.split(' ')[0]   : null;
             if (startPrefix) all = all.filter(r => r.startTime.split(' ')[0] >= startPrefix);
             if (endPrefix)   all = all.filter(r => r.startTime.split(' ')[0] <= endPrefix);
             all.sort((a, b) => b.startTime.localeCompare(a.startTime));
             ws.send(JSON.stringify({ type: 'recordings', data: all }));
-            console.log(`[WS] Sent ${all.length} recordings to browser`);
 
             // If empty, re-ask device
             if (all.length === 0) {
                 Object.entries(tcpSockets).forEach(([ph, sock]) => {
                     if (sock && !sock.destroyed) {
                         sock.write(buildQueryRecordings(ph, startDate, endDate));
-                        console.log(`[WS] Re-sent 0x9205 to ${ph}`);
                     }
                 });
             }
@@ -268,22 +243,28 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'download_recording') {
             const { ch, startTime, endTime, phone: reqPhone } = msg;
             const targetPhone = reqPhone || Object.keys(tcpSockets)[0];
-            console.log(`[WS] download_recording ch:${ch} ${startTime}→${endTime} phone:${targetPhone}`);
-            console.log(`[WS] tcpSockets keys:`, Object.keys(tcpSockets));          // ADD
-            console.log(`[WS] socket exists:`, !!tcpSockets[targetPhone]);           // ADD
-            console.log(`[WS] socket destroyed:`, tcpSockets[targetPhone]?.destroyed); // ADD
+            console.log(`[Rec] download ch:${ch} ${startTime}→${endTime} phone:${targetPhone}`);
 
             if (!targetPhone || !tcpSockets[targetPhone] || tcpSockets[targetPhone].destroyed) {
                 ws.send(JSON.stringify({ type: 'error', message: 'Device not connected' }));
                 return;
             }
             const frame = buildFtpUploadRequest(targetPhone, ch, startTime, endTime);
-            console.log(`[WS] Sending 0x9206 frame:`, frame.toString('hex'));
+            // console.log(`[WS] Sending 0x9206 frame:`, frame.toString('hex'));
         
             // Start recording FFmpeg instance
+            // Stop any previous rec FFmpeg and clean old segments
             if (recChannels[targetPhone]) {
                 try { recChannels[targetPhone].ffmpeg.stdin.end(); } catch(_) {}
+                delete recChannels[targetPhone];
             }
+            // Delete stale rec HLS files
+            try {
+                const files = fs.readdirSync('./public');
+                files.filter(f => f.startsWith(`rec_${targetPhone}`))
+                     .forEach(f => { try { fs.unlinkSync(`./public/${f}`); } catch(_) {} });
+                console.log(`[Rec] Cleaned old rec segments for ${targetPhone}`);
+            } catch(_) {}
             const recFfmpeg = startRecFFmpeg(targetPhone, ch);
             recChannels[targetPhone] = {
                 ffmpeg: recFfmpeg, gotIFrame: false,
@@ -307,21 +288,17 @@ wss.on('connection', (ws, req) => {
             };
             activeDownloads[targetPhone].resetTimer = resetRecTimer;
             resetRecTimer();
-            console.log(`[Rec] ⏺ Streaming recording via FFmpeg for ${targetPhone}`);
-
             tcpSockets[targetPhone].write(frame);
 
-            // Notify browser immediately with the HLS URL
-            // Notify browser after first segment is ready (~3s after first I-frame)
-            // Notify ALL browser clients after first I-frame + 3s for FFmpeg segment
-            const notifyPhone = targetPhone;
+            // Notify browser after first I-frame + 3s for FFmpeg to produce segment
+            const _notifyPhone = targetPhone;
             recChannels[targetPhone].onReady = () => {
                 setTimeout(() => {
-                    console.log(`[Rec] ✅ Sending recording_ready for ${notifyPhone}`);
+                    console.log(`[Rec] ✅ recording_ready → /public/rec_${_notifyPhone}.m3u8`);
                     wss.clients.forEach(c => {
                         if (c.readyState === 1) c.send(JSON.stringify({
                             type: 'recording_ready',
-                            url:  `/public/rec_${notifyPhone}.m3u8`,
+                            url:  `/public/rec_${_notifyPhone}.m3u8`,
                         }));
                     });
                 }, 3000);
@@ -768,7 +745,7 @@ function buildQueryRecordings(phone, startDate, endDate) {
     body.fill(0x00, 13, 21); // no alarm filter
     body[21] = 2; // video only
     body[22] = 0; // all streams
-    console.log(`[Rec] buildQueryRecordings: ${sDate} ${sTime} → ${eDate} ${eTime}`);
+    // console.log(`[Rec] buildQueryRecordings: ${sDate} ${sTime} → ${eDate} ${eTime}`);
     return buildFrame(0x9205, body, phone);
 }
 
@@ -824,8 +801,8 @@ function buildFtpUploadRequest(phone, channel, startTime, endTime) {
     body[p++] = 0xFF; // taskCond: allow on ALL networks (4G, WiFi, any)
 
     let frame = buildFrame(0x9206, body, phone);  // ← use phone parameter
-    console.log(`[Rec] FTP upload request frame size: ${frame.length} bytes`);
-    console.log(`[Rec] Frame hex: ${frame.toString('hex')}`);
+    // console.log(`[Rec] FTP upload request frame size: ${frame.length} bytes`);
+    // console.log(`[Rec] Frame hex: ${frame.toString('hex')}`);
     return frame;
 }
 
@@ -838,10 +815,6 @@ const tcpServer = net.createServer(socket => {
 
     socket.on('data', data => {
         try {
-                // ADD THIS — log everything raw after a download request
-            if (data.length > 50) {
-                console.log(`[RAW TCP] ${data.length} bytes, first 32:`, data.slice(0, 32).toString('hex'));
-            }
             buffer = Buffer.concat([buffer, data]);
             let offset = 0;
 
@@ -882,9 +855,9 @@ const tcpServer = net.createServer(socket => {
 
                 // ── Signalling packet (JT/T 808 — 0x7E framing) ─────────────
                 if (buffer[offset] === 0x7E) {
-                    console.log("data ----------- ", data);
-                    console.log("data hex ------- ", data.toString('hex'));
-                    console.log("buffer -------- ", buffer);
+                    // console.log("data ----------- ", data);
+                    // console.log("data hex ------- ", data.toString('hex'));
+                    // console.log("buffer -------- ", buffer);
                     const end = buffer.indexOf(0x7E, offset + 1);
                     // if (end !== -1) {
                     //     // Forward the complete raw 0x7E…0x7E frame to the remote server
@@ -1060,8 +1033,8 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildAck(phone, seq, msgId));
 
                         // Log the FULL raw body in hex so we can see exactly what device sent
-                        console.log(`[Rec] 0x1206 raw body (${body.length} bytes):`, body.toString('hex'));
-                        console.log(`[Rec] 0x1206 raw body ascii:`, body.toString('ascii').replace(/[^\x20-\x7E]/g, '.'));
+                        // console.log(`[Rec] 0x1206 raw body (${body.length} bytes):`, body.toString('hex'));
+                        // console.log(`[Rec] 0x1206 raw body ascii:`, body.toString('ascii').replace(/[^\x20-\x7E]/g, '.'));
 
                         // T/98 §5.6.6 Table 27:
                         // byte 0-1: reply serial number (WORD)

@@ -326,6 +326,25 @@
         modal.classList.add('active');
 
         if (window._recHls) { window._recHls.destroy(); window._recHls = null; }
+        document.getElementById('recStatus').textContent = '⏳ Waiting for stream...';
+        // Poll until manifest exists before loading HLS
+        let pollCount = 0;
+        const pollHls = setInterval(async () => {
+            try {
+                const r = await fetch(url, { method: 'HEAD' });
+                if (r.ok) {
+                    clearInterval(pollHls);
+                    document.getElementById('recStatus').textContent = '✅ Playing';
+                    _loadHls(url, video);
+                }
+            } catch(_) {}
+            if (++pollCount > 30) { clearInterval(pollHls); } // give up after 30s
+        }, 1000);
+
+        return; // _loadHls does the actual playing
+    }
+
+    function _loadHls(url, video) {
         if (url.endsWith('.m3u8') && Hls.isSupported()) {
             const hls = new Hls({
                 lowLatencyMode: false,
