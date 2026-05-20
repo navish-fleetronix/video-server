@@ -313,13 +313,18 @@ wss.on('connection', (ws, req) => {
 
             // Notify browser immediately with the HLS URL
             // Notify browser after first segment is ready (~3s after first I-frame)
+            // Notify ALL browser clients after first I-frame + 3s for FFmpeg segment
+            const notifyPhone = targetPhone;
             recChannels[targetPhone].onReady = () => {
                 setTimeout(() => {
-                    ws.send(JSON.stringify({
-                        type: 'recording_ready',
-                        url:  `/public/rec_${targetPhone}.m3u8`,
-                    }));
-                }, 2000);
+                    console.log(`[Rec] ✅ Sending recording_ready for ${notifyPhone}`);
+                    wss.clients.forEach(c => {
+                        if (c.readyState === 1) c.send(JSON.stringify({
+                            type: 'recording_ready',
+                            url:  `/public/rec_${notifyPhone}.m3u8`,
+                        }));
+                    });
+                }, 3000);
             };
             ws.send(JSON.stringify({ type: 'status', message: '⏳ Buffering recording...' }));
         }
@@ -857,10 +862,9 @@ const tcpServer = net.createServer(socket => {
                     const rawData      = buffer.slice(offset + 30, offset + 30 + dataBodyLen);
 
                     const effectivePhone = phone || Object.keys(activeDownloads)[0];
-                    const isRec = effectivePhone &&
-                                  activeDownloads[effectivePhone] &&
-                                  activeDownloads[effectivePhone].active === true &&
-                                  recChannels[effectivePhone];
+                    const dlEntry = effectivePhone ? activeDownloads[effectivePhone] : null;
+                    const isRec = !!(dlEntry && dlEntry.active === true && recChannels[effectivePhone]);
+                    console.log(`[REC CHK] eff=${effectivePhone} active=${dlEntry?.active} hasRec=${!!recChannels[effectivePhone]} isRec=${isRec}`);
 
                     if (isRec) {
                         // Reset inactivity timer on every packet

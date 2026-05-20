@@ -327,12 +327,24 @@
 
         if (window._recHls) { window._recHls.destroy(); window._recHls = null; }
         if (url.endsWith('.m3u8') && Hls.isSupported()) {
-            const hls = new Hls({ lowLatencyMode: true });
+            const hls = new Hls({
+                lowLatencyMode: false,
+                manifestLoadingMaxRetry: 10,
+                manifestLoadingRetryDelay: 1000,
+            });
             window._recHls = hls;
             hls.loadSource(url);
             hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
-            hls.on(Hls.Events.ERROR, (e, d) => console.error('[RecHLS]', d));
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                console.log('[RecHLS] Manifest loaded — playing');
+                video.play();
+            });
+            hls.on(Hls.Events.ERROR, (e, d) => {
+                console.error('[RecHLS] Error:', d.type, d.details);
+                if (d.fatal) {
+                    document.getElementById('recStatus').textContent = '❌ Stream error: ' + d.details;
+                }
+            });
         } else {
             video.src = url;
             video.play().catch(console.warn);
