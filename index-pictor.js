@@ -276,6 +276,8 @@ wss.on('connection', (ws, req) => {
                 ffmpeg: recFfmpeg, gotIFrame: false,
                 subpackets: [], tsCounter: 0, patPmtSent: false,
             };
+            console.log(`[Rec] recChannels keys after set:`, Object.keys(recChannels));
+            console.log(`[Rec] activeDownloads keys after set:`, Object.keys(activeDownloads));
             activeDownloads[targetPhone] = { channel: ch, active: true };
  
             // Inactivity timer — stop rec if no packets for 10s
@@ -357,8 +359,17 @@ wss.on('connection', (ws, req) => {
             _resetTimer();
             console.log(`[Rec] recActive = true, sending 0x9201`);
  
-            const frame = buildVideoPlaybackRequest(targetPhone, ch, startTime, endTime);
-            tcpSockets[targetPhone].write(frame);
+            // Stop any previous playback first
+            tcpSockets[targetPhone].write(buildPlaybackStop(targetPhone, ch));
+            
+            // Small delay then send new playback request
+            setTimeout(() => {
+                if (tcpSockets[targetPhone] && !tcpSockets[targetPhone].destroyed) {
+                    const frame = buildVideoPlaybackRequest(targetPhone, ch, startTime, endTime);
+                    tcpSockets[targetPhone].write(frame);
+                    console.log(`[Rec] Sent 0x9201 for ${startTime}→${endTime}`);
+                }
+            }, 500);
             ws.send(JSON.stringify({ type: 'status', message: '⏳ Buffering recording...' }));
         }
  
@@ -551,7 +562,10 @@ function handleRecFrame(frameData, phone, dataType) {
 
 function processRecPacket(rawData, phone, dataType, subpktMarker) {
     const rc = recChannels[phone];
-    if (!rc) return;
+    if (!rc) {
+        console.warn(`[Rec] processRecPacket: no recChannel for phone=${phone}, keys=${JSON.stringify(Object.keys(recChannels))}`);
+        return;
+    }
     if (subpktMarker === 0) {
         handleRecFrame(rawData, phone, dataType);
     } else if (subpktMarker === 1) {
