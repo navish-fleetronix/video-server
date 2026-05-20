@@ -22,9 +22,46 @@
             background: #222; padding: 10px; border-radius: 6px;
             font-size: 13px; border-left: 3px solid #00d4ff;
         }
+        /* ── Recordings ── */
+        .rec-section { margin-top: 30px; }
+        .rec-controls { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+        .rec-controls label { color:#aaa; font-size:13px; }
+        .rec-controls input[type="datetime-local"] {
+            background:#222; color:#fff; border:1px solid #444;
+            padding:6px 10px; border-radius:4px; font-size:13px;
+        }
+        .btn { border:none; padding:7px 16px; border-radius:4px; cursor:pointer; font-weight:bold; font-size:13px; }
+        .btn-primary  { background:#00d4ff; color:#000; }
+        .btn-success  { background:#27ae60; color:#fff; }
+        .btn-danger   { background:#c0392b; color:#fff; }
+        #recStatus { color:#aaa; font-size:12px; }
+        table { width:100%; border-collapse:collapse; }
+        thead tr { background:#222; }
+        th { padding:8px; color:#00d4ff; text-align:left; }
+        td { padding:8px; border-bottom:1px solid #222; font-size:13px; }
+        .btn-play { background:#00d4ff; color:#000; border:none; padding:5px 12px; border-radius:4px; cursor:pointer; font-weight:bold; font-size:12px; }
+        /* ── Modal ── */
+        .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88);
+                         z-index:1000; align-items:center; justify-content:center; }
+        .modal-overlay.active { display:flex; }
+        .modal-box { background:#111; border:1px solid #00d4ff; border-radius:10px; padding:20px;
+                     width:90%; max-width:960px; position:relative; }
+        .modal-close { position:absolute; top:12px; right:16px; background:none; border:none;
+                       color:#fff; font-size:22px; cursor:pointer; }
+        .modal-title { color:#00d4ff; font-size:13px; letter-spacing:1px; margin-bottom:12px; }
+        #modalVideo { width:100%; background:#000; border-radius:6px; max-height:70vh; }
     </style>
 </head>
 <body>
+
+<!-- Video Modal -->
+<div class="modal-overlay" id="videoModal">
+    <div class="modal-box">
+        <button class="modal-close" onclick="closeModal()">✕</button>
+        <div class="modal-title" id="modalTitle">▶ Playback</div>
+        <video id="modalVideo" controls></video>
+    </div>
+</div>
 
 <!-- Live Video -->
 <div>
@@ -50,6 +87,37 @@
     <div class="info-box" id="info-voltage">Voltage: --</div>
     <div class="info-box" id="info-satellites">Satellites: --</div>
     <div class="info-box" id="info-alarms">Alarms: --</div>
+</div>
+
+<!-- Recordings -->
+<div class="rec-section">
+    <h3>📥 FTP Download Recording</h3>
+    <div class="rec-controls">
+        <label>Ch:</label>
+        <input type="number" id="recCh" value="1" min="1" max="8"
+               style="width:50px;background:#222;color:#fff;border:1px solid #444;padding:6px;border-radius:4px;font-size:13px;" />
+        <label>From:</label>
+        <input type="datetime-local" id="recFrom" />
+        <label>To:</label>
+        <input type="datetime-local" id="recTo" />
+        <button class="btn btn-primary" onclick="requestFtpDownload()">⬇ Request Download</button>
+        <button class="btn btn-danger"  onclick="cancelDownload()" id="btnCancel" style="display:none">🛑 Cancel</button>
+        <span id="recStatus"></span>
+    </div>
+
+    <!-- Downloaded files list -->
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Filename</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody id="recList">
+            <tr><td colspan="3" style="color:#555">No downloads yet</td></tr>
+        </tbody>
+    </table>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
@@ -106,6 +174,7 @@ ws.onmessage = e => {
     let msg;
     try { msg = JSON.parse(e.data); } catch(err) { return; }
 
+    // ── GPS location ─────────────────────────────────────────────────────────
     if (msg.type === 'location') {
         updateMap(msg.lat, msg.lon, msg.speed, msg.direction);
         document.getElementById('info-lat').textContent        = `Latitude: ${msg.lat.toFixed(6)}`;
@@ -121,7 +190,117 @@ ws.onmessage = e => {
         document.getElementById('info-satellites').textContent = `Satellites: ${msg.satellites || '--'}`;
         document.getElementById('info-alarms').textContent     = `Alarms: ${msg.alarms && msg.alarms.length ? msg.alarms.join(', ') : 'None'}`;
     }
+
+    // ── FTP download complete — file ready to play ────────────────────────────
+    if (msg.type === 'ftp_ready') {
+        setStatus(`✅ File ready: ${msg.filename}`);
+        document.getElementById('btnCancel').style.display = 'none';
+        addFileToList(msg.filename, msg.url);
+    }
+
+    // ── Status / error ────────────────────────────────────────────────────────
+    if (msg.type === 'status') setStatus(msg.message);
+    if (msg.type === 'error')  setStatus('❌ ' + msg.message);
 };
+
+// ── Status helper ─────────────────────────────────────────────────────────────
+function setStatus(txt) {
+    document.getElementById('recStatus').textContent = txt;
+    console.log('[status]', txt);
+}
+
+// ── FTP Download request ──────────────────────────────────────────────────────
+function requestFtpDownload() {
+    const ch    = parseInt(document.getElementById('recCh').value) || 1;
+    const from  = document.getElementById('recFrom').value;
+    const to    = document.getElementById('recTo').value;
+
+    if (!from || !to) { setStatus('⚠️ Select both From and To'); return; }
+    if (ws.readyState !== WebSocket.OPEN) { setStatus('❌ Not connected'); return; }
+
+    const fmt = v => v.replace('T', ' ') + ':00';
+    const startTime = fmt(from);
+    const endTime   = fmt(to);
+
+    console.log(`[FTP] Requesting ch:${ch} ${startTime} → ${endTime}`);
+    setStatus(`⏳ Sending request to camera...`);
+    document.getElementById('btnCancel').style.display = '';
+
+    ws.send(JSON.stringify({
+        type:      'ftp_download',
+        ch,
+        startTime,
+        endTime,
+    }));
+}
+
+// ── Cancel download ───────────────────────────────────────────────────────────
+function cancelDownload() {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'ftp_cancel' }));
+    document.getElementById('btnCancel').style.display = 'none';
+    setStatus('🛑 Cancelling...');
+}
+
+// ── Downloaded files list ─────────────────────────────────────────────────────
+let _files = [];
+function addFileToList(filename, url) {
+    _files.push({ filename, url });
+    const tbody = document.getElementById('recList');
+    tbody.innerHTML = '';
+    _files.forEach((f, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${i + 1}</td>
+            <td>${f.filename}</td>
+            <td>
+                <button class="btn-play" onclick="playFile('${f.url}','${f.filename}')">▶ Play</button>
+                <a href="${f.url}" download="${f.filename}"
+                   style="margin-left:8px;background:#27ae60;color:#fff;border:none;
+                          padding:5px 12px;border-radius:4px;cursor:pointer;
+                          font-weight:bold;font-size:12px;text-decoration:none;">
+                   ⬇ Save
+                </a>
+            </td>`;
+        tbody.appendChild(tr);
+    });
+}
+
+// ── Video modal ───────────────────────────────────────────────────────────────
+function playFile(url, title) {
+    const modal   = document.getElementById('videoModal');
+    const video   = document.getElementById('modalVideo');
+    document.getElementById('modalTitle').textContent = '▶ ' + title;
+    modal.classList.add('active');
+
+    if (window._recHls) { window._recHls.destroy(); window._recHls = null; }
+    video.pause();
+    video.src = '';
+
+    if (url.endsWith('.m3u8') && Hls.isSupported()) {
+        const hls = new Hls({ startPosition: 0 });
+        window._recHls = hls;
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { video.currentTime = 0; video.play(); });
+        hls.on(Hls.Events.ERROR, (e, d) => {
+            if (d.fatal) setStatus('❌ HLS error: ' + d.details);
+        });
+    } else {
+        video.src = url;
+        video.currentTime = 0;
+        video.play().catch(err => setStatus('❌ Play error: ' + err.message));
+    }
+}
+
+function closeModal() {
+    const modal = document.getElementById('videoModal');
+    const video = document.getElementById('modalVideo');
+    modal.classList.remove('active');
+    video.pause();
+    video.src = '';
+    if (window._recHls) { window._recHls.destroy(); window._recHls = null; }
+}
 </script>
 </body>
 </html>

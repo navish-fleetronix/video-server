@@ -14,6 +14,7 @@ require('dotenv').config();
 const { WebSocketServer } = require('ws');
 const { spawn }           = require('child_process');
 const tcpForwarder        = require('./tcp-forwarder');
+const ftpDownload         = require('./ftp-download');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const CONFIG = {
@@ -34,11 +35,30 @@ const tcpSockets = {};  // { [phone]: socket }
 const wss = new WebSocketServer({ port: CONFIG.wsPort });
 console.log(`✓ WebSocket on :${CONFIG.wsPort}`);
 
+// ── Init FTP download module ────────────────────────────────────────────────
+ftpDownload.init({
+    serverIp:      CONFIG.serverIp,
+    ftpPort:       2121,
+    pasvDataPort:  2122,
+    recordingsDir: './recordings',
+    wss,
+    tcpSockets,
+    buildFrame,
+    buildAck,
+});
+
 wss.on('connection', (ws, req) => {
     console.log(`[WS] Browser connected from ${req.socket.remoteAddress}`);
+    ws.on('message', raw => {
+        let msg;
+        try { msg = JSON.parse(raw); } catch(e) {
+            console.warn('[WS] Non-JSON message:', raw.toString());
+            return;
+        }
+        ftpDownload.handleWsMessage(msg, ws);
+    });
     ws.on('close', () => console.log('[WS] Browser disconnected'));
     ws.on('error', err => console.error('[WS] Error:', err.message));
-    // No recording messages handled here — intentionally empty for now
 });
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
@@ -46,8 +66,10 @@ http.createServer((req, res) => {
     const urlPath = req.url.split('?')[0];
     let filePath;
     if (urlPath === '/') {
-        filePath = './video.html';
+        filePath = './video-0.html';
     } else if (urlPath.startsWith('/public/')) {
+        filePath = `.${urlPath}`;
+    } else if (urlPath.startsWith('/recordings/')) {
         filePath = `.${urlPath}`;
     } else {
         filePath = `.${urlPath}`;
@@ -59,6 +81,7 @@ http.createServer((req, res) => {
         '.js':   'application/javascript',
         '.m3u8': 'application/vnd.apple.mpegurl',
         '.ts':   'video/mp2t',
+        '.mp4':  'video/mp4',
     };
 
     if (req.method === 'HEAD') {
@@ -513,6 +536,10 @@ const tcpServer = net.createServer(socket => {
                         fs.appendFile(`./${fileName}`, Object.values(gpsRecord).join(',') + '\n', err => {
                             if (err) console.error('[GPS LOG] write error:', err.message);
                         });
+
+                    // ── FTP download messages (0x0001 ack for 0x9206, 0x1206) ──
+                    } else if (ftpDownload.handleSignalling(msgId, body, seq, phone, socket)) {
+                        // handled by ftp-download module — no further action needed
 
                     // ── Everything else: generic ACK ─────────────────────────
                     } else {
