@@ -46,7 +46,7 @@ http.createServer((req, res) => {
     const urlPath = req.url.split('?')[0];
     let filePath;
     if (urlPath === '/') {
-        filePath = './video-0.html';
+        filePath = './video.html';
     } else if (urlPath.startsWith('/public/')) {
         filePath = `.${urlPath}`;
     } else {
