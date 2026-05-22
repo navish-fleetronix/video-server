@@ -332,6 +332,8 @@ function _makeFtpHandler() {
                         break;
 
                     case 'AUTH':
+                    case 'AUTH TLS':
+                    case 'AUTH SSL':
                         reply(431, 'No TLS support');
                         break;
 
