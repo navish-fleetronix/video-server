@@ -80,6 +80,7 @@ function _err(...args)  { console.error('[FTP-DL]', ...args); }
 // ── 0x9205 frame builder — query recording list ────────────────────────────
 // T/98 §5.6.1 Table 21: send this BEFORE 0x9206 so camera verifies file exists
 function _build9205(phone, channel, startTime, endTime) {
+    const framePhone = String(phone).length === 10 ? '1' + phone : phone;  
     const s = _parseDateTime(startTime, '00:00:00');
     const e = _parseDateTime(endTime,   '23:59:59');
 
