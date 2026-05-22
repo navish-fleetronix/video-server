@@ -314,7 +314,6 @@ function buildFrame(msgId, body, phone) {
     header.writeUInt16BE(body.length, 2);
 
     const phoneStr = String(phone).padStart(12, '0');
-    const phoneStr = String(phone).padStart(12, '0');
     console.log('[buildFrame] phone input:', phone, 'padded:', phoneStr);
     Buffer.from(
         phoneStr.match(/.{2}/g).map(v => {
