@@ -396,6 +396,9 @@ const tcpServer = net.createServer(socket => {
 
                 // ── Signalling packet (JT/T 808 — 0x7E framing) ─────────────
                 if (buffer[offset] === 0x7E) {
+                    console.log("Buffer is 0x7E at offset", offset);
+                    console.log("data", data.toString('hex'));
+                    console.log("buffer", buffer.toString('hex'));
                     const end = buffer.indexOf(0x7E, offset + 1);
                     if (end === -1) break;
 
