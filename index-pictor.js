@@ -49,13 +49,6 @@ function getOrCreateDeviceChannel(phone, channel) {
 }
 
 // ── Extract phone number from a T/98 stream packet header (bytes 4–9, BCD) ───
-// The 30-byte 0x30316364 header has the device phone at offset 4, 6 BCD bytes.
-function phoneFromStreamHeader(buf, offset) {
-    return buf.slice(offset + 4, offset + 10)
-        .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`)
-        .join('')
-        .replace(/^0+/, '');
-}
 
 // ── WebSocket server ──────────────────────────────────────────────────────────
 const wss = new WebSocketServer({ port: CONFIG.wsPort });
@@ -254,7 +247,8 @@ function wrapFrameInTS(frameData, counter) {
 
 // ── Handle one complete video frame ──────────────────────────────────────────
 function handleVideoFrame(frameData, channel, dataType, phone) {
-    const ch = ensureFFmpeg(phone, channel);
+    const ch = getOrCreateDeviceChannel(phone, channel);
+    if (!ch.ffmpeg || !ch.ffmpeg.stdin.writable) return;
 
     const isVideo = (dataType === 0 || dataType === 1 || dataType === 2);
     if (!isVideo) return;
@@ -413,6 +407,7 @@ const tcpServer = net.createServer(socket => {
             while (offset < buffer.length - 4) {
 
                 // ── Stream data packet (T/98 §5.5.3 — 0x30316364 header) ────
+                // ── Stream data packet (T/98 §5.5.3 — 0x30316364 header) ────
                 if (buffer[offset]   === 0x30 && buffer[offset+1] === 0x31 &&
                     buffer[offset+2] === 0x63 && buffer[offset+3] === 0x64) {
 
@@ -420,21 +415,15 @@ const tcpServer = net.createServer(socket => {
                     const dataBodyLen = buffer.readUInt16BE(offset + 28);
                     if (offset + 30 + dataBodyLen > buffer.length) break;
 
-                    // ✅ Extract phone directly from stream packet header (bytes 4–9, BCD)
-                    const streamPhone  = phoneFromStreamHeader(buffer, offset);
                     const byte15       = buffer[offset + 15];
                     const dataType     = (byte15 >> 4) & 0x0F;
                     const subpktMarker = byte15 & 0x0F;
                     const channel      = buffer[offset + 14];
                     const rawData      = buffer.slice(offset + 30, offset + 30 + dataBodyLen);
 
-                    if (streamPhone) {
-                        // Keep socket-level phone in sync
-                        if (!phone) {
-                            phone = streamPhone;
-                            console.log(`[stream] Identified device ${phone} from stream header`);
-                        }
-                        processVideoPacket(rawData, channel, dataType, subpktMarker, streamPhone);
+                    // Only process video if we know which device this is (set by signalling handshake)
+                    if (phone) {
+                        processVideoPacket(rawData, channel, dataType, subpktMarker, phone);
                     }
 
                     offset += 30 + dataBodyLen;
