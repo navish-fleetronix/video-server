@@ -57,6 +57,14 @@ console.log(`✓ WebSocket on :${CONFIG.wsPort}`);
 
 wss.on('connection', (ws, req) => {
     console.log(`[WS] Browser connected from ${req.socket.remoteAddress}`);
+
+    // Send all currently connected devices immediately to the new browser
+    const connectedPhones = Object.keys(tcpSockets);
+    console.log(`[WS] Sending ${connectedPhones.length} active device(s) to new browser`);
+    connectedPhones.forEach(p => {
+        ws.send(JSON.stringify({ type: 'device_connected', phone: p }));
+    });
+
     ws.on('close', () => console.log('[WS] Browser disconnected'));
     ws.on('error', err => console.error('[WS] Error:', err.message));
 });

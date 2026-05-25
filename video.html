@@ -137,10 +137,14 @@ function updateMap(phone, lat, lon, speed, direction) {
 // ── Live video players ────────────────────────────────────────────────────────
 const hlsPlayers = {};  // { [phone]: Hls instance or true for native }
 
-function ensureVideoPlayer(phone) {
-    if (hlsPlayers[phone]) return;  // already created
+let _playerStartIndex = 0;
 
-    // Remove the "waiting" placeholder on first device
+function ensureVideoPlayer(phone) {
+    if (hlsPlayers[phone]) return;
+
+    // Mark as initializing immediately so duplicate calls are ignored
+    hlsPlayers[phone] = 'pending';
+
     const placeholder = document.getElementById('no-devices');
     if (placeholder) placeholder.remove();
 
@@ -153,29 +157,46 @@ function ensureVideoPlayer(phone) {
     `;
     document.getElementById('devices').appendChild(card);
 
-    const video = document.getElementById(`vid-${phone}`);
-    // HLS path: public/<phone>/<phone>_ch1.m3u8
-    const src = `/public/${phone}/video1.m3u8`;
+    // Stagger each player by 800ms so they don't all hammer the server at once
+    const delay = _playerStartIndex * 800;
+    _playerStartIndex++;
 
-    if (Hls.isSupported()) {
-        const hls = new Hls({ lowLatencyMode: true });
-        hls.loadSource(src);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
-        hls.on(Hls.Events.ERROR, (e, d) => {
-            if (d.fatal) console.error(`[HLS ${phone}]`, d);
-        });
-        hlsPlayers[phone] = hls;
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Safari native HLS
-        video.src = src;
-        video.play();
-        hlsPlayers[phone] = true;
-    } else {
-        console.warn(`[HLS] Browser does not support HLS for device ${phone}`);
-    }
+    setTimeout(() => {
+        const video = document.getElementById(`vid-${phone}`);
+        if (!video) return;
+
+        const src = `/public/${phone}/video1.m3u8`;
+
+        if (Hls.isSupported()) {
+            const hls = new Hls({
+                lowLatencyMode:       true,
+                maxBufferLength:      10,
+                maxMaxBufferLength:   20,
+                liveSyncDurationCount: 2,
+                liveMaxLatencyDurationCount: 4,
+            });
+            hls.loadSource(src);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+            hls.on(Hls.Events.ERROR, (e, d) => {
+                if (d.fatal) {
+                    console.error(`[HLS ${phone}]`, d);
+                    // Auto-recover on fatal errors
+                    if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                        hls.startLoad();
+                    } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                        hls.recoverMediaError();
+                    }
+                }
+            });
+            hlsPlayers[phone] = hls;
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = src;
+            video.play();
+            hlsPlayers[phone] = true;
+        }
+    }, delay);
 }
-
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 const ws = new WebSocket(`ws://${location.hostname}:8801`);
 ws.onopen  = () => console.log('[WS] Connected');
