@@ -133,10 +133,14 @@ function startFFmpeg(phone, channel) {
         '-c:v',                  'libx264',
         '-preset',               'ultrafast',
         '-tune',                 'zerolatency',
+        '-vf',                   'scale=640:360',   // 360p low resolution
         '-g',                    '50',
         '-keyint_min',           '25',
         '-sc_threshold',         '0',
-        '-an',                                  // no audio
+        '-b:v',                  '400k',            // low bitrate
+        '-maxrate',              '400k',
+        '-bufsize',              '800k',
+        '-an',
         '-f',                    'hls',
         '-hls_time',             '2',
         '-hls_list_size',        '3',
