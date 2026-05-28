@@ -460,7 +460,7 @@ const tcpServer = net.createServer(socket => {
                         .map(b => b.toString(16).padStart(2, '0')).join('');
                         console.log('[AUTH] raw BCD phone:', rawPhone, 'stripped:', rawPhone.replace(/^0/,''));
                         console.log('[AUTH] raw bytes:', unescaped.slice(4, 10).toString('hex'));
-                        console.log('[AUTH] digits:', unescaped.slice(4, 10).map(b => `${(b>>4)&0xF}${b&0xF}`).join('-'));
+                        console.log('[AUTH] digits:', unescaped.slice(4, 10).map(b => b.toString(16).padStart(2,'0')).join('-'));
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
                         tcpSockets[phone] = socket;
