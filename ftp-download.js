@@ -431,8 +431,8 @@ function handleWsMessage(msg, ws) {
 
         // Pick the first connected socket if phone not specified
         const phone = reqPhone || Object.keys(_tcpSockets)[0];
-
-        _log(`▶ ftp_download — phone:${phone} ch:${ch} ${startTime} → ${endTime}`);
+        const phoneStr = String(phone).padStart(12, '0');
+        _log(`▶ ftp_download — phone:${phoneStr} ch:${ch} ${startTime} → ${endTime}`);
 
         // Validation
         if (!phone) {
@@ -442,7 +442,7 @@ function handleWsMessage(msg, ws) {
             return;
         }
         if (!_tcpSockets[phone] || _tcpSockets[phone].destroyed) {
-            const m = `Device socket not available for ${phone}`;
+            const m = `Device socket not available for ${phoneStr}`;
             _err(m);
             ws.send(JSON.stringify({ type: 'error', message: m }));
             return;
@@ -457,7 +457,7 @@ function handleWsMessage(msg, ws) {
         // Step 1 — send 0x9205 (query list) so camera verifies file exists on SD card
         const queryFrame = _build9205(phone, ch, startTime, endTime);
         _tcpSockets[phone].write(queryFrame);
-        _log(`Sent 0x9205 pre-query to ${phone}`);
+        _log(`Sent 0x9205 pre-query to ${phoneStr}`);
 
         // Step 2 — after 3 s, send 0x9206 (FTP upload request)
         setTimeout(() => {

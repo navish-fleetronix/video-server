@@ -314,7 +314,8 @@ function buildFrame(msgId, body, phone) {
     header.writeUInt16BE(body.length, 2);
 
     const phoneStr = String(phone).padStart(12, '0');
-    console.log('[buildFrame] phone input:', phone, 'padded:', phoneStr);
+    // console.log('[buildFrame] phone input:', phone, 'padded:', phoneStr);
+    console.log('[buildFrame] phone input:', phoneStr);
     Buffer.from(
         phoneStr.match(/.{2}/g).map(v => {
             const n = parseInt(v, 10);
@@ -540,10 +541,10 @@ const tcpServer = net.createServer(socket => {
                             ].filter(Boolean).join('|') : 'NONE',
                         };
 
-                        tcpForwarder.sendGpsRecord(gpsRecord);
-                        fs.appendFile(`./${fileName}`, Object.values(gpsRecord).join(',') + '\n', err => {
-                            if (err) console.error('[GPS LOG] write error:', err.message);
-                        });
+                        // tcpForwarder.sendGpsRecord(gpsRecord);
+                        // fs.appendFile(`./${fileName}`, Object.values(gpsRecord).join(',') + '\n', err => {
+                        //     if (err) console.error('[GPS LOG] write error:', err.message);
+                        // });
 
                     // ── 0x1206: File upload completion from camera ────────────
                     } else if (msgId === 0x1206) {
