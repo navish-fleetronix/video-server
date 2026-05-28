@@ -314,8 +314,7 @@ function buildFrame(msgId, body, phone) {
     header.writeUInt16BE(body.length, 2);
 
     const phoneStr = String(phone).padStart(12, '0');
-    // console.log('[buildFrame] phone input:', phone, 'padded:', phoneStr);
-    console.log('[buildFrame] phone input:', phoneStr);
+    console.log('[buildFrame] phone input:', phone, 'padded:', phoneStr);
     Buffer.from(
         phoneStr.match(/.{2}/g).map(v => {
             const n = parseInt(v, 10);
@@ -378,6 +377,7 @@ function parseAdditionalInfo(buf) {
             case 0x25: if (val.length >= 2) result.voltage       = val.readUInt16BE(0) / 10 + ' V';    break;
             case 0x30: if (val.length >= 1) result.signalStrength = val[0];                            break;
             case 0x31: if (val.length >= 1) result.satellites    = val[0];                             break;
+            case 0xd5: result.imei = val.toString('ascii').replace(/\0/g, '').trim();                  break;
         }
         i += 2 + len;
     }
@@ -433,7 +433,7 @@ const tcpServer = net.createServer(socket => {
                     phone = unescaped.slice(4, 10)
                         .map(b => `${(b >> 4) & 0x0F}${b & 0x0F}`)
                         .join('')
-                        .replace(/^0+/, '');
+                        .replace(/^0/, '');
                     const seq  = unescaped.readUInt16BE(10);
                     const body = unescaped.slice(12);
                     // console.log(`[signalling] msgId: 0x${msgId.toString(16).padStart(4,'0')} phone: ${phone}`);
@@ -503,6 +503,7 @@ const tcpServer = net.createServer(socket => {
                         const locationData = {
                             type: 'location', phone, lat, lon, speed, direction,
                             elevation, datetime: dt, accOn, located, alarms, ...extra,
+                            imei: extra.imei || '--',
                         };
 
                         // console.log(`[GPS] ${phone} lat=${lat} lon=${lon} speed=${speed}km/h dir=${direction}° dt=${dt}`);
