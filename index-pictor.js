@@ -543,10 +543,10 @@ const tcpServer = net.createServer(socket => {
                             ].filter(Boolean).join('|') : 'NONE',
                         };
 
-                        // tcpForwarder.sendGpsRecord(gpsRecord);
-                        // fs.appendFile(`./${fileName}`, Object.values(gpsRecord).join(',') + '\n', err => {
-                        //     if (err) console.error('[GPS LOG] write error:', err.message);
-                        // });
+                        tcpForwarder.sendGpsRecord(gpsRecord);
+                        fs.appendFile(`./${fileName}`, Object.values(gpsRecord).join(',') + '\n', err => {
+                            if (err) console.error('[GPS LOG] write error:', err.message);
+                        });
 
                     // ── 0x1206: File upload completion from camera ────────────
                     } else if (msgId === 0x1206) {
