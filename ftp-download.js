@@ -198,6 +198,7 @@ function _makeFtpHandler() {
         let dataSocket   = null;
         let uploadStream = null;
         let uploadPath   = null;
+        let currentDir   = '/';
 
         const reply = (code, msg) => {
             _log(`→ FTP ${code} ${msg}`);
@@ -232,12 +233,13 @@ function _makeFtpHandler() {
 
                     case 'PWD':
                     case 'XPWD':
-                        reply(257, '"/" is current directory');
+                        reply(257, `"${currentDir}" is current directory`);
                         break;
 
                     case 'CWD':
-                        reply(250, 'Directory changed');
-                        break;
+                    currentDir = arg.startsWith('/') ? arg : path.join(currentDir, arg);
+                    reply(250, `Directory changed to ${currentDir}`);
+                    break;
 
                     case 'MKD': {
                         const dirPath = path.join(_recordingsDir, arg.replace(/^\//, ''));
@@ -277,9 +279,10 @@ function _makeFtpHandler() {
                         const _sendListing = () => {
                             if (_pasvDataSocket) {
                                 try {
-                                    const entries = fs.readdirSync(_recordingsDir);
+                                    const absDir  = path.join(_recordingsDir, currentDir);
+                                    const entries = fs.readdirSync(absDir);
                                     const listing = entries.map(name => {
-                                        const full = path.join(_recordingsDir, name);
+                                        const full = path.join(absDir, name);
                                         const stat = fs.statSync(full);
                                         const isDir = stat.isDirectory();
                                         const size  = stat.size;
