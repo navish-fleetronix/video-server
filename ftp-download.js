@@ -119,7 +119,7 @@ function _build9206(phone, channel, startTime, endTime) {
     //const tag        = startTime.replace(/[: -]/g, '');
     //const uploadPath = `/`;  // root path — camera picks its own filename
     const tag = `${phone}-${Date.now()}-1`;
-    const uploadPath = `/FtpDownload/`;
+    const uploadPath = `/`;
     const s = _parseDateTime(startTime, '00:00:00');
     const e = _parseDateTime(endTime,   '23:59:59');
 
