@@ -158,7 +158,7 @@ function _build9206(phone, channel, startTime, endTime) {
     // storageType: 0 = any, 1 = main, 2 = disaster — use 0
     body[p++] = 0;   // storageType: 99 — matches camera memType
     // taskCondition bits: bit0=WiFi bit1=LAN bit2=3G/4G — 0xFF = allow all
-    body[p++] = 0xFF;
+    body[p++] = 0x01;
 
     _log(`0x9206 body breakdown:
       FTP IP     : ${_serverIp} (len ${k})
