@@ -52,12 +52,15 @@ wss.on('connection', (ws, req) => {
 
 // ── Bus: ftp-service sends frames back through the bus ────────────────────────
 bus.on('device:send', ({ phone, frame }) => {
+    console.log(`[BUS] device:send — phone:${phone} frame:${frame.length} bytes hex:${frame.toString('hex')}`);
     const socket = tcpSockets[String(phone)];
+    console.log(`[BUS] socket keys:`, Object.keys(tcpSockets));
     if (!socket || socket.destroyed) {
         console.warn(`[BUS] device:send — no socket for phone:${phone}`);
         return;
     }
     socket.write(frame);
+    console.log(`[BUS] wrote ${frame.length} bytes to ${phone}`);
 });
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
@@ -445,6 +448,7 @@ const tcpServer = net.createServer(socket => {
                         socket.write(buildAck(phone, seq, msgId));
                         socket.write(buildVideoRequest(phone, CONFIG.serverIp, CONFIG.tcpPort, 1));
                         tcpSockets[phone] = socket;
+                        console.log('[AUTH] storing phone as:', phone, 'keys now:', Object.keys(tcpSockets));
                         console.log(`[signalling] Registered socket for ${phone}`);
                         // Notify ftp-service that this device is now available
                         bus.emit('device:connected', { phone, socket });
