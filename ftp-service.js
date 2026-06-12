@@ -550,11 +550,17 @@ function makeFtpHandler(sessionPasvPort) {
                         const filename   = path.basename(arg || `rec_${Date.now()}.mp4`);
                         const uploadPath = path.join(saveDir, filename);
 
-                        // ── Ignore duplicate STOR for same file ──────────────────────────
+                       // ── Ignore duplicate STOR only for same full path ─────────────────
                         if (fs.existsSync(uploadPath) && fs.statSync(uploadPath).size > 1024) {
-                            log(`STOR duplicate ignored — file already exists: ${filename}`);
-                            reply(125, 'Already received, skipping');
-                            break;
+                            // Rename with timestamp instead of skipping — handles retry from same camera
+                            const ext     = path.extname(filename);
+                            const base    = path.basename(filename, ext);
+                            const newPath = path.join(saveDir, `${base}_${Date.now()}${ext}`);
+                            log(`STOR duplicate — renaming to: ${path.basename(newPath)}`);
+                            uploadPath   = newPath;
+                            uploadStream = fs.createWriteStream(uploadPath);
+                        } else {
+                            uploadStream = fs.createWriteStream(uploadPath);
                         }
                         uploadStream     = fs.createWriteStream(uploadPath);
                         log(`STOR → ${uploadPath}`);
