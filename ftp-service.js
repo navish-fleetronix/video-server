@@ -548,7 +548,7 @@ function makeFtpHandler(sessionPasvPort) {
                         }
 
                         const filename   = path.basename(arg || `rec_${Date.now()}.mp4`);
-                        const uploadPath = path.join(saveDir, filename);
+                        let uploadPath = path.join(saveDir, filename);
 
                        // ── Ignore duplicate STOR only for same full path ─────────────────
                         if (fs.existsSync(uploadPath) && fs.statSync(uploadPath).size > 1024) {

@@ -122,7 +122,7 @@ function sendGpsRecord(gpsRecord) {
         gpsRecord.alarms,
     ].join(',') + '\n';
 
-    console.log(`[TCPForwarder] → GPS: ${csv.trim()}`);
+    // console.log(`[TCPForwarder] → GPS: ${csv.trim()}`);
     _send(Buffer.from(csv, 'utf8'));
 }
 
