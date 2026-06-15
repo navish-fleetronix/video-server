@@ -54,15 +54,17 @@ const tcpSockets = {};   // { [phone]: net.Socket }
 
 function makeCamera() {
     return {
-        ffmpeg:       null,      // child_process
-        gotIFrame:    false,     // wait for first I-frame before sending P/B
-        subpackets:   [],        // reassembly buffer for split RTP packets
-        patPmtSent:   false,     // send PAT+PMT once per FFmpeg instance
-        tsCounter:    0,         // MPEG-TS continuity counter
-        lastFrameAt:  Date.now(),// for watchdog
-        watchdog:     null,      // setInterval handle
-        restarting:   false,     // guard against double-restart
-        frameCount:   0,         // total frames received (for logging)
+        ffmpeg:          null,
+        gotIFrame:       false,
+        subpackets:      [],
+        patPmtSent:      false,
+        tsCounter:       0,
+        lastFrameAt:     Date.now(),
+        watchdog:        null,
+        restarting:      false,
+        frameCount:      0,
+        hasStreamSocket: false,   // ← add this
+        streamSocket:    null,    // ← add this
     };
 }
 
@@ -276,6 +278,20 @@ function startWatchdog(phone) {
         }
         const age = Date.now() - cameras[phone].lastFrameAt;
         if (age > CONFIG.watchdogMs && cameras[phone].ffmpeg && !cameras[phone].restarting) {
+
+            // ── NEW: if no stream socket exists, stop FFmpeg and wait ──────────
+            // Camera stream connection dropped — stop restarting FFmpeg endlessly
+            if (!cameras[phone].hasStreamSocket) {
+                console.warn(`[Watchdog ${phone}] No stream socket — stopping FFmpeg until camera reconnects`);
+                if (cameras[phone].ffmpeg) {
+                    cameras[phone].ffmpeg.kill('SIGKILL');
+                    cameras[phone].ffmpeg    = null;
+                    cameras[phone].patPmtSent = false;
+                    cameras[phone].gotIFrame  = false;
+                }
+                return;
+            }
+
             console.warn(`[Watchdog ${phone}] No frames for ${age}ms — restarting FFmpeg`);
             cameras[phone].ffmpeg.kill('SIGKILL');
         }
@@ -612,6 +628,7 @@ const tcpServer = net.createServer(socket => {
             while (offset < buffer.length) {
 
                 // ── Stream data packet (T/98 §5.5.3 — magic 0x30316364) ───────
+                // ── Stream data packet (T/98 §5.5.3 — magic 0x30316364) ───────
                 if (buffer.length - offset >= 4 &&
                     buffer[offset]   === 0x30 && buffer[offset+1] === 0x31 &&
                     buffer[offset+2] === 0x63 && buffer[offset+3] === 0x64) {
@@ -620,8 +637,7 @@ const tcpServer = net.createServer(socket => {
                     const dataBodyLen = buffer.readUInt16BE(offset + 28);
                     if (buffer.length - offset < 30 + dataBodyLen) break;
 
-                    // Extract SIM/phone from stream packet (bytes 8–13, BCD hex)
-                    const simBytes   = buffer.slice(offset + 8, offset + 14);
+                    const simBytes    = buffer.slice(offset + 8, offset + 14);
                     const streamPhone = Array.from(simBytes, b =>
                         b.toString(16).padStart(2, '0')).join('').replace(/^0+/, '');
 
@@ -632,6 +648,17 @@ const tcpServer = net.createServer(socket => {
 
                     const camPhone = streamPhone || phone;
                     if (camPhone && cameras[camPhone]) {
+                        // Mark that this socket is a stream socket for this camera
+                        if (!cameras[camPhone].hasStreamSocket) {
+                            cameras[camPhone].hasStreamSocket = true;
+                            cameras[camPhone].streamSocket    = socket;
+                            console.log(`[${camPhone}] 📡 Stream socket established`);
+
+                            // Start FFmpeg now if not running
+                            if (!cameras[camPhone].ffmpeg && !cameras[camPhone].restarting) {
+                                startFFmpeg(camPhone);
+                            }
+                        }
                         processVideoPacket(rawData, camPhone, dataType, subpktMarker);
                     }
 
@@ -791,17 +818,29 @@ const tcpServer = net.createServer(socket => {
         console.log(`[TCP] Disconnected: ${remote} phone:${phone}`);
         if (!phone) return;
 
-        // Stop watchdog
-        if (cameras[phone]?.watchdog) {
-            clearInterval(cameras[phone].watchdog);
+        // Check if this was a stream socket for any camera
+        for (const [camPhone, cam] of Object.entries(cameras)) {
+            if (cam.streamSocket === socket) {
+                console.log(`[${camPhone}] 📡 Stream socket disconnected`);
+                cam.hasStreamSocket = false;
+                cam.streamSocket    = null;
+                cam.gotIFrame       = false;
+                // Kill FFmpeg — will restart when stream socket reconnects
+                if (cam.ffmpeg) {
+                    cam.ffmpeg.kill('SIGKILL');
+                    cam.ffmpeg     = null;
+                    cam.patPmtSent = false;
+                }
+                return;  // don't delete camera state — signalling socket still alive
+            }
         }
 
-        // Kill FFmpeg
+        // Signalling socket closed — full cleanup
+        if (cameras[phone]?.watchdog) clearInterval(cameras[phone].watchdog);
         if (cameras[phone]?.ffmpeg) {
             cameras[phone].ffmpeg.stdin.end();
             try { cameras[phone].ffmpeg.kill('SIGTERM'); } catch (_) {}
         }
-
         delete cameras[phone];
         delete tcpSockets[phone];
 
