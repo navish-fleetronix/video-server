@@ -188,25 +188,35 @@ function startFFmpeg(phone) {
     } catch (_) {}
 
     const ffmpeg = spawn(CONFIG.ffmpegPath, [
-    '-fflags',          '+genpts+discardcorrupt+igndts',
-    '-err_detect',      'ignore_err',
-    '-f',               'mpegts',
-    '-probesize',       '2000000',
-    '-analyzeduration', '2000000',
-    '-i',               'pipe:0',
+        '-fflags',          '+genpts+discardcorrupt+igndts',
+        '-err_detect',      'ignore_err',
+        '-f',               'mpegts',
+        '-probesize',       '2000000',
+        '-analyzeduration', '2000000',
+        '-i',               'pipe:0',
 
-    '-c:v',             'copy',      // ← just copy the stream, no re-encode
-                                     //   faster, no quality loss, no CPU waste
-    '-an',
+        // Decode HEVC input, re-encode to H.264 for browser compatibility
+        '-c:v',             'libx264',
+        '-preset',          'veryfast',      // faster than ultrafast, still low latency
+        '-tune',            'zerolatency',
+        '-profile:v',       'baseline',      // widest browser support
+        '-level',           '3.1',
+        '-g',               '30',
+        '-keyint_min',      '30',
+        '-sc_threshold',    '0',
+        '-b:v',             '800k',
+        '-maxrate',         '1000k',
+        '-bufsize',         '2000k',
+        '-an',
 
-    '-f',               'hls',
-    '-hls_time',        '2',
-    '-hls_list_size',   '5',
-    '-hls_flags',       'delete_segments+append_list+independent_segments',
-    '-hls_segment_type','mpegts',
-    '-hls_segment_filename', `./public/${phone}_%04d.ts`,
-    `./public/${phone}.m3u8`,
-]);
+        '-f',               'hls',
+        '-hls_time',        '2',
+        '-hls_list_size',   '5',
+        '-hls_flags',       'delete_segments+append_list+independent_segments',
+        '-hls_segment_type','mpegts',
+        '-hls_segment_filename', `./public/${phone}_%04d.ts`,
+        `./public/${phone}.m3u8`,
+    ]);
 
     // Log only errors from FFmpeg stderr
     let stderrBuf = '';
@@ -316,15 +326,25 @@ function buildPMT() {
     return pkt;
 }
 
-function wrapFrameInTS(frameData, counter) {
+function wrapFrameInTS(frameData, counter, ptsMs) {
+    // PES header with PTS timestamp
+    const pts    = Math.floor((ptsMs || Date.now()) * 90);  // 90kHz clock
+    const pts32  = pts & 0xFFFFFFFF;
     const pesHdr = Buffer.from([
-        0x00, 0x00, 0x01,
-        0xE0,
-        0x00, 0x00,
-        0x80,
-        0x00,
-        0x00,
+        0x00, 0x00, 0x01,           // start code
+        0xE0,                        // stream id: video
+        0x00, 0x00,                  // PES packet length (0 = unbounded)
+        0x80,                        // flags: marker bits
+        0x80,                        // PTS_DTS_flags: PTS only
+        0x05,                        // header data length
+        // PTS (5 bytes)
+        0x21 | ((pts32 >> 29) & 0x0E),
+        (pts32 >> 22) & 0xFF,
+        0x01 | ((pts32 >> 14) & 0xFE),
+        (pts32 >>  7) & 0xFF,
+        0x01 | ((pts32 <<  1) & 0xFE),
     ]);
+    // ... rest unchanged
     const pes     = Buffer.concat([pesHdr, frameData]);
     const packets = [];
     let pos = 0, first = true, ctr = counter;
@@ -382,7 +402,7 @@ function handleVideoFrame(frameData, phone, dataType) {
         broadcast({ type: 'stream_started', phone, stream: `/public/${phone}.m3u8` });
     }
 
-    const { packets, nextCounter } = wrapFrameInTS(frameData, cam.tsCounter);
+    const { packets, nextCounter } = wrapFrameInTS(frameData, cam.tsCounter, Date.now());
     cam.tsCounter  = nextCounter;
     cam.lastFrameAt = Date.now();
     cam.frameCount++;
