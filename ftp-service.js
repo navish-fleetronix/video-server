@@ -829,9 +829,10 @@ function makeFtpHandler() {
                         reply(150, 'Ready to receive');
 
                         // ── Identify phone and requestId NOW (before async completes) ──
-                        // Extract phone from folder: recordings/15760064474/ → 15760064474
-                        const relDir   = saveDir.replace(RECORDINGS_DIR, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
-                        const ftpPhone = relDir || null;
+                        // Extract phone from folder using path.relative to handle ./recordings vs recordings
+                        const relDir   = path.relative(path.resolve(RECORDINGS_DIR), path.resolve(saveDir));
+                        // relDir is now just "15760064474" (the phone folder)
+                        const ftpPhone = relDir.split(path.sep)[0] || null;
 
                         // Capture requestId from session AT THIS MOMENT — not inside async callback
                         // because _sessions[phone] may be deleted by then
@@ -849,7 +850,7 @@ function makeFtpHandler() {
                             completed = true;
 
                             const finalFilename = path.basename(uploadPath);
-                            const relPath       = uploadPath.replace(RECORDINGS_DIR, '').replace(/^[/\\]+/, '');
+                            const relPath       = path.relative(path.resolve(RECORDINGS_DIR), path.resolve(uploadPath));
                             const fileSize      = fs.existsSync(uploadPath) ? fs.statSync(uploadPath).size : 0;
                             const fullPath      = path.resolve(uploadPath);
 
