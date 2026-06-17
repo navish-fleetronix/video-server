@@ -106,96 +106,88 @@ redis = connectRedis();
 
 // ── Redis helpers ─────────────────────────────────────────────────────────────
 //
-// Two Redis structures:
+// Structure:
 //
-// 1. CURRENT — one record per phone, shows only the active/latest operation
-//    Key:   ftp:current
-//    Type:  HASH  (field = phone, value = JSON)
-//    Usage: HSET ftp:current <phone> <json>
-//           HGET ftp:current <phone>
-//           HGETALL ftp:current   ← all phones at once
+// HASH  videoRecInfo            ← current operation per phone
+//   field: <phone>               value: JSON string
 //
-// 2. HISTORY — ordered list of all requests per phone
-//    Key:   ftp:history:<phone>
-//    Type:  LIST  (newest first, capped at 50)
-//    Usage: LPUSH ftp:history:<phone> <json>
-//           LRANGE ftp:history:<phone> 0 49
+// LIST  ftp:history:<phone>     ← full history per phone (newest first, max 50)
+//   each item: JSON string
 
-const REDIS_CURRENT_KEY = 'ftp:current';
+const CURRENT_HASH = 'videoRecInfo';
 
 function historyKey(phone) {
     return `ftp:history:${phone}`;
 }
 
-// Save new record → updates current + appends to history
+// Save new record → HSET videoRecInfo <phone> <json>  +  LPUSH history
 async function saveToRedis(record) {
     if (!redis) return;
     try {
         record.updatedAt = new Date().toISOString();
         const json = JSON.stringify(record);
 
-        // 1. Update current hash — HSET ftp:current <phone> <json>
-        await redis.hset(REDIS_CURRENT_KEY, record.phone, json);
+        // 1. Current — HSET videoRecInfo <phone> <json>
+        await redis.hset(CURRENT_HASH, record.phone, json);
 
-        // 2. Prepend to history list — LPUSH ftp:history:<phone> <json>
+        // 2. History — LPUSH ftp:history:<phone> <json>  (cap at 50)
         const hKey = historyKey(record.phone);
         await redis.lpush(hKey, json);
-        await redis.ltrim(hKey, 0, 49);          // keep latest 50
+        await redis.ltrim(hKey, 0, 49);
         await redis.expire(hKey, REDIS_TTL);
 
-        log(`Redis saved current[${record.phone}] requestId:${record.requestId} status:${record.status}`);
+        log(`Redis HSET ${CURRENT_HASH}[${record.phone}] requestId:${record.requestId} status:${record.status}`);
     } catch (e) {
         err('Redis save error:', e.message);
     }
 }
 
-// Update existing current record + update matching history entry
+// Update current record — HGET → merge → HSET  +  update matching history entry
 async function updateRedis(phone, requestId, patch) {
     if (!redis) return;
     try {
         const now = new Date().toISOString();
 
         // 1. Update current hash
-        const existing = await redis.hget(REDIS_CURRENT_KEY, phone);
-        if (!existing) { warn(`Redis current[${phone}] not found`); return; }
+        const existing = await redis.hget(CURRENT_HASH, phone);
+        if (!existing) { warn(`Redis HGET ${CURRENT_HASH}[${phone}] — not found`); return; }
         const current = { ...JSON.parse(existing), ...patch, updatedAt: now };
-        await redis.hset(REDIS_CURRENT_KEY, phone, JSON.stringify(current));
+        await redis.hset(CURRENT_HASH, phone, JSON.stringify(current));
 
-        // 2. Update matching entry in history list
+        // 2. Update matching history entry
         const hKey = historyKey(phone);
         const items = await redis.lrange(hKey, 0, 49);
         for (let i = 0; i < items.length; i++) {
             const item = JSON.parse(items[i]);
             if (item.requestId === requestId) {
-                const updated = { ...item, ...patch, updatedAt: now };
-                await redis.lset(hKey, i, JSON.stringify(updated));
+                await redis.lset(hKey, i, JSON.stringify({ ...item, ...patch, updatedAt: now }));
                 break;
             }
         }
 
-        log(`Redis updated current[${phone}] requestId:${requestId} status:${patch.status || current.status}`);
+        log(`Redis HSET ${CURRENT_HASH}[${phone}] requestId:${requestId} status:${patch.status || current.status}`);
     } catch (e) {
         err('Redis update error:', e.message);
     }
 }
 
-// Get current record for a phone
+// HGET videoRecInfo <phone>
 async function getCurrentFromRedis(phone) {
     if (!redis) return null;
     try {
-        const raw = await redis.hget(REDIS_CURRENT_KEY, phone);
+        const raw = await redis.hget(CURRENT_HASH, phone);
         return raw ? JSON.parse(raw) : null;
     } catch (e) {
-        err('Redis get error:', e.message);
+        err('Redis hget error:', e.message);
         return null;
     }
 }
 
-// Get all current records (all phones)
+// HGETALL videoRecInfo  → all phones
 async function getAllCurrentFromRedis() {
     if (!redis) return {};
     try {
-        const all = await redis.hgetall(REDIS_CURRENT_KEY);
+        const all = await redis.hgetall(CURRENT_HASH);
         if (!all) return {};
         const result = {};
         for (const [phone, raw] of Object.entries(all)) {
@@ -203,24 +195,24 @@ async function getAllCurrentFromRedis() {
         }
         return result;
     } catch (e) {
-        err('Redis getall error:', e.message);
+        err('Redis hgetall error:', e.message);
         return {};
     }
 }
 
-// Get by requestId — scan history of all phones
+// Find by requestId — check current hash first, then scan history
 async function getByRequestId(requestId) {
     if (!redis) return null;
     try {
-        // Check all current records first (fast)
-        const all = await redis.hgetall(REDIS_CURRENT_KEY);
+        // Check current hash first (fast)
+        const all = await redis.hgetall(CURRENT_HASH);
         if (all) {
             for (const raw of Object.values(all)) {
                 const rec = JSON.parse(raw);
                 if (rec.requestId === requestId) return rec;
             }
         }
-        // Not in current — scan history keys
+        // Scan history lists
         const historyKeys = await redis.keys('ftp:history:*');
         for (const hKey of historyKeys) {
             const items = await redis.lrange(hKey, 0, 49);
@@ -236,7 +228,7 @@ async function getByRequestId(requestId) {
     }
 }
 
-// Get history for a phone (latest 50, newest first)
+// LRANGE ftp:history:<phone> 0 49
 async function getHistoryFromRedis(phone) {
     if (!redis) return [];
     try {
@@ -836,44 +828,58 @@ function makeFtpHandler() {
                         log(`STOR → ${uploadPath}`);
                         reply(150, 'Ready to receive');
 
-                        // Find which phone this belongs to by matching folder
-                        const relDir    = saveDir.replace(RECORDINGS_DIR, '').replace(/^[/\\]/, '');
-                        const ftpPhone  = relDir.replace(/\//g, '') || null;
-                        const session   = ftpPhone ? _sessions[ftpPhone] : null;
-                        const requestId = session?.requestId || null;
+                        // ── Identify phone and requestId NOW (before async completes) ──
+                        // Extract phone from folder: recordings/15760064474/ → 15760064474
+                        const relDir   = saveDir.replace(RECORDINGS_DIR, '').replace(/^[/\\]+/, '').replace(/[/\\]+$/, '');
+                        const ftpPhone = relDir || null;
+
+                        // Capture requestId from session AT THIS MOMENT — not inside async callback
+                        // because _sessions[phone] may be deleted by then
+                        const capturedRequestId = ftpPhone ? (_sessions[ftpPhone]?.requestId || null) : null;
+
+                        log(`STOR phone:${ftpPhone} requestId:${capturedRequestId}`);
 
                         const slot = assignedPort ? _pasvPool[assignedPort] : null;
 
+                        // Guard against onComplete firing twice (end + close both call uploadStream.end())
+                        let completed = false;
+
                         const onComplete = async () => {
+                            if (completed) return;
+                            completed = true;
+
                             const finalFilename = path.basename(uploadPath);
-                            const relPath       = uploadPath.replace(RECORDINGS_DIR, '').replace(/^[/\\]/, '');
+                            const relPath       = uploadPath.replace(RECORDINGS_DIR, '').replace(/^[/\\]+/, '');
                             const fileSize      = fs.existsSync(uploadPath) ? fs.statSync(uploadPath).size : 0;
                             const fullPath      = path.resolve(uploadPath);
 
-                            log(`✅ Transfer complete: ${finalFilename} (${fileSize} bytes)`);
+                            log(`✅ Transfer complete: ${finalFilename} (${fileSize} bytes) phone:${ftpPhone} requestId:${capturedRequestId}`);
                             reply(226, 'Transfer complete');
 
-                            const readyPayload = {
-                                type:       'ftp_ready',
-                                phone:      ftpPhone,
-                                requestId,
-                                url:        `/recordings/${relPath}`,
-                                filename:   finalFilename,
-                                filePath:   fullPath,
+                            broadcast({
+                                type:      'ftp_ready',
+                                phone:     ftpPhone,
+                                requestId: capturedRequestId,
+                                url:       `/recordings/${relPath}`,
+                                filename:  finalFilename,
+                                filePath:  fullPath,
                                 fileSize,
-                            };
-                            broadcast(readyPayload);
+                            });
 
-                            // Update Redis with complete status + file info
-                            if (ftpPhone && requestId) {
-                                await updateRedis(ftpPhone, requestId, {
+                            // Update Redis to complete
+                            if (ftpPhone && capturedRequestId) {
+                                await updateRedis(ftpPhone, capturedRequestId, {
                                     status:   'complete',
                                     filePath: fullPath,
                                     filename: finalFilename,
                                     url:      `/recordings/${relPath}`,
                                     fileSize,
                                 });
+                                // Clean up session only after Redis is updated
                                 delete _sessions[ftpPhone];
+                                log(`Redis marked complete for ${ftpPhone} requestId:${capturedRequestId}`);
+                            } else {
+                                log(`⚠️ No requestId captured — Redis not updated. phone:${ftpPhone}`);
                             }
 
                             if (assignedPort) { freePasvPort(assignedPort); assignedPort = null; }
@@ -883,8 +889,8 @@ function makeFtpHandler() {
                             log(`Piping data → ${uploadPath}`);
                             ds.pipe(uploadStream);
                             uploadStream.on('finish', onComplete);
-                            ds.on('end',   () => uploadStream.end());
-                            ds.on('close', () => uploadStream.end());
+                            // Only call uploadStream.end() once — prefer 'end' over 'close'
+                            ds.on('end',   () => { uploadStream.end(); });
                             ds.on('error', e => {
                                 err('Data socket error:', e.message);
                                 reply(426, 'Transfer aborted');
