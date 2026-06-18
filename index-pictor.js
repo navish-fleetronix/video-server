@@ -539,9 +539,9 @@ function parseAdditionalInfo(buf) {
         if (i + 2 + len > buf.length) break;
         const val = buf.slice(i + 2, i + 2 + len);
         switch (id) {
-            case 0x01: if (val.length >= 4) result.mileage        = val.readUInt32BE(0) / 10 + ' km';   break;
-            case 0x03: if (val.length >= 2) result.sensorSpeed    = val.readUInt16BE(0) / 10 + ' km/h'; break;
-            case 0x25: if (val.length >= 2) result.voltage        = val.readUInt16BE(0) / 10 + ' V';    break;
+            case 0x01: if (val.length >= 4) result.mileage        = val.readUInt32BE(0) / 10;   break;
+            case 0x03: if (val.length >= 2) result.sensorSpeed    = val.readUInt16BE(0) / 10; break;
+            case 0x25: if (val.length >= 2) result.voltage        = val.readUInt16BE(0) / 10;    break;
             case 0x30: if (val.length >= 1) result.signalStrength = val[0];                              break;
             case 0x31: if (val.length >= 1) result.satellites     = val[0];                              break;
             case 0xd5: result.imei = val.toString('ascii').replace(/\0/g, '').trim();                    break;
