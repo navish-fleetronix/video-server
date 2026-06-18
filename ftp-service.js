@@ -115,6 +115,7 @@ redis = connectRedis();
 //   each item: JSON string
 
 const CURRENT_HASH = 'videoRecInfo';
+const STOPPAGE_VIDEO_RECORDING_TRIGGERED = 'stoppageVideoRecordingTriggered';
 
 function historyKey(phone) {
     return `ftp:history:${phone}`;
@@ -147,6 +148,14 @@ async function updateRedis(phone, requestId, patch) {
     if (!redis) return;
     try {
         const now = new Date().toISOString();
+
+        //update the stoppageVideoRecordingTriggered
+        const existingStoppageVideoRecordingTriggered = await redis.hget(STOPPAGE_VIDEO_RECORDING_TRIGGERED, requestId);
+        if (existingStoppageVideoRecordingTriggered) {
+            const stopValue = JSON.parse(existingStoppageVideoRecordingTriggered);
+            const currentData = { ...JSON.parse(existingStoppageVideoRecordingTriggered), ...patch, updatedAt: now };
+            await redis.hset(STOPPAGE_VIDEO_RECORDING_TRIGGERED, requestId, JSON.stringify(current));
+        }
 
         // 1. Update current hash
         const existing = await redis.hget(CURRENT_HASH, phone);
@@ -309,14 +318,14 @@ http.createServer((req, res) => {
         req.on('end', async () => {
             try {
                 console.log("[FTP-SVC] /api/ftp-download body:", body);
-                const { phone, ch, startTime, endTime, folder } = JSON.parse(body);
+                const { phone, ch, startTime, endTime, folder, requestKey } = JSON.parse(body);
                 if (!phone || !ch || !startTime || !endTime) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'phone, ch, startTime, endTime are required' }));
                     return;
                 }
                 const result = await triggerDownload({
-                    phone: String(phone), ch, startTime, endTime, folder,
+                    phone: String(phone), ch, startTime, endTime, folder, requestKey
                 });
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(result));
@@ -520,12 +529,12 @@ bus.on('device:message', ({ msgId, body, seq, phone }) => {
 });
 
 // ── Core logic ────────────────────────────────────────────────────────────────
-async function triggerDownload({ phone, ch, startTime, endTime, folder }) {
+async function triggerDownload({ phone, ch, startTime, endTime, folder, requestKey }) {
     phone = String(phone);
     if (!folder) folder = `/${phone}/`;
 
     // Generate unique request ID
-    const requestId = folder;
+    const requestId = requestKey;
     const createdAt = new Date().toISOString();
 
     log(`▶ triggerDownload requestId:${requestId} phone:${phone} ch:${ch} ${startTime} → ${endTime} folder:${folder}`);
