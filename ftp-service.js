@@ -351,14 +351,14 @@ http.createServer((req, res) => {
         req.on('end', async () => {
             try {
                 console.log("[FTP-SVC] /api/ftp-download body:", body);
-                const { phone, ch, startTime, endTime, folder, requestKey } = JSON.parse(body);
+                const { phone, ch, startTime, endTime, folder, requestKey, alarmFlag, quality, events } = JSON.parse(body);
                 if (!phone || !ch || !startTime || !endTime) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'phone, ch, startTime, endTime are required' }));
                     return;
                 }
                 const result = await triggerDownload({
-                    phone: String(phone), ch, startTime, endTime, folder, requestKey
+                    phone: String(phone), ch, startTime, endTime, folder, requestKey, alarmFlag, quality, events
                 });
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify(result));
@@ -462,6 +462,19 @@ http.createServer((req, res) => {
     if (req.method === 'GET' && urlPath === '/api/sessions') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(_sessions));
+        return;
+    }
+
+    // ── GET /api/ftp-events  → list valid event names + their masks ───────────
+    if (req.method === 'GET' && urlPath === '/api/ftp-events') {
+        const events = Object.entries(EVENT_BITS).map(([name, bit]) => ({
+            name,
+            bit,
+            mask: '0x' + BigInt.asUintN(64, 1n << BigInt(bit)).toString(16).padStart(16, '0'),
+            group: bit >= 32 ? 'video (this standard)' : 'vehicle (JT/T 808-2011)',
+        }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ events, aliases: EVENT_ALIASES }));
         return;
     }
 
@@ -635,14 +648,14 @@ async function processNextInQueue(phone) {
     broadcast({ type: 'status', phone, requestId: job.requestId, message: `▶ Starting download ch${job.ch} ${job.startTime} → ${job.endTime}` });
 
     // Step 1 — query file list
-    bus.emit('device:send', { phone, frame: build9205(phone, job.ch, job.startTime, job.endTime) });
+    bus.emit('device:send', { phone, frame: build9205(phone, job.ch, job.startTime, job.endTime, BigInt(job.alarmMask || '0'), job.streamType || 1) });
     log(`[${phone}] Sent 0x9205`);
 
     // Step 2 — send FTP command after 3s
     setTimeout(async () => {
         // Check session still matches — may have been cancelled
         if (_sessions[phone]?.requestId !== job.requestId) return;
-        const frame = build9206(phone, job.ch, job.startTime, job.endTime, job.folder);
+        const frame = build9206(phone, job.ch, job.startTime, job.endTime, job.folder, BigInt(job.alarmMask || '0'), job.streamType || 1);
         bus.emit('device:send', { phone, frame });
         log(`[${phone}] Sent 0x9206 folder:${job.folder}`);
         broadcast({ type: 'status', phone, requestId: job.requestId, message: `⏳ FTP command sent to camera...` });
@@ -678,9 +691,15 @@ async function jobFinished(phone, reason = 'done') {
     setTimeout(() => processNextInQueue(phone), 2000);
 }
 
-async function triggerDownload({ phone, ch, startTime, endTime, folder, requestKey }) {
+async function triggerDownload({ phone, ch, startTime, endTime, folder, requestKey, alarmFlag, quality, events }) {
     phone = String(phone);
     if (!folder) folder = `/${phone}/`;
+
+    // Quality → stream type (Table 26): 1 = main stream (high), 2 = sub stream (low)
+    const streamType = normalizeStreamType(quality);
+    // Alarm/event filter (Table 26 alarm logo, 64-bit). Combines named `events`
+    // with any raw `alarmFlag`. Empty/unset on both → 0n = no filter (all recordings).
+    const { mask: alarmMask, resolved: events_resolved, unknown: events_unknown } = buildAlarmMask(events, alarmFlag);
 
     const requestId = requestKey || crypto.randomBytes(8).toString('hex');
     const createdAt = new Date().toISOString();
@@ -690,10 +709,10 @@ async function triggerDownload({ phone, ch, startTime, endTime, folder, requestK
 
     const queuePosition = _queue[phone].length + (_sessions[phone] ? 1 : 0);
 
-    log(`▶ triggerDownload requestId:${requestId} phone:${phone} ch:${ch} ${startTime} → ${endTime} queuePos:${queuePosition}`);
+    log(`▶ triggerDownload requestId:${requestId} phone:${phone} ch:${ch} ${startTime} → ${endTime} stream:${streamType === 2 ? 'sub/low' : 'main/high'} alarm:0x${alarmMask.toString(16)} queuePos:${queuePosition}`);
 
-    // Build job
-    const job = { requestId, phone, ch, startTime, endTime, folder, sentAt: null };
+    // Build job — alarmMask stored as string so Redis JSON stays serializable
+    const job = { requestId, phone, ch, startTime, endTime, folder, streamType, alarmMask: alarmMask.toString(), sentAt: null };
 
     // Save to Redis as queued
     const record = {
@@ -703,6 +722,10 @@ async function triggerDownload({ phone, ch, startTime, endTime, folder, requestK
         startTime,
         endTime,
         folder,
+        streamType,
+        quality:        streamType === 2 ? 'low' : 'high',
+        alarmFlag:      alarmMask.toString(),
+        events:         events_resolved,
         status:         'queued',
         queuePosition,
         filePath:       null,
@@ -746,6 +769,11 @@ async function triggerDownload({ phone, ch, startTime, endTime, folder, requestK
         startTime,
         endTime,
         folder,
+        quality:      streamType === 2 ? 'low' : 'high',
+        streamType,
+        alarmFlag:    alarmMask.toString(),
+        events:       events_resolved,
+        eventsIgnored: events_unknown,
         trackUrl:     `/api/ftp-status/${requestId}`,
         historyUrl:   `/api/ftp-history/${phone}`,
         queueUrl:     `/api/ftp-queue/${phone}`,
@@ -770,6 +798,105 @@ function cancelDownload(phone) {
 }
 
 // ── Frame builders ────────────────────────────────────────────────────────────
+
+// Map a quality hint from the request body to a protocol stream type (Table 26).
+//   high / main / 1        → 1 (main stream  = high quality)
+//   low  / sub  / 2        → 2 (sub stream   = low quality)
+//   anything else / unset  → 1 (default to high)
+function normalizeStreamType(quality) {
+    if (quality === undefined || quality === null) return 1;
+    const q = String(quality).trim().toLowerCase();
+    if (q === 'low'  || q === 'sub'  || q === '2') return 2;
+    if (q === 'high' || q === 'main' || q === '1') return 1;
+    return 1;
+}
+
+// Normalize an alarm/event filter into a 64-bit BigInt mask (Table 26 alarm logo).
+// Accepts: number, decimal string, '0x..' hex string, or BigInt. undefined/null → 0n.
+//   bit0–bit31  : JT/T 808-2011 Table 18 alarm flags
+//   bit32–bit63 : video alarm flags (Table 13 of this standard)
+function normalizeAlarmFlag(alarmFlag) {
+    if (alarmFlag === undefined || alarmFlag === null || alarmFlag === '') return 0n;
+    try {
+        if (typeof alarmFlag === 'bigint') return BigInt.asUintN(64, alarmFlag);
+        if (typeof alarmFlag === 'number') return BigInt.asUintN(64, BigInt(Math.trunc(alarmFlag)));
+        const s = String(alarmFlag).trim();
+        const v = s.toLowerCase().startsWith('0x') ? BigInt(s) : BigInt(s);
+        return BigInt.asUintN(64, v);
+    } catch (e) {
+        warn(`Invalid alarmFlag '${alarmFlag}' — ignoring, using 0 (no filter)`);
+        return 0n;
+    }
+}
+
+// Named events → bit position in the 64-bit alarm logo.
+//   bit0–bit31  : JT/T 808-2011 Table 18 vehicle alarms (subset of common ones)
+//   bit32–bit63 : video alarms defined in Table 14 of this standard
+// Keys are the canonical names; ALIASES below map alternate spellings to them.
+const EVENT_BITS = {
+    // ── Common JT/T 808-2011 vehicle alarms (bit0–bit31) ──
+    emergency:                 0,
+    overspeed:                 1,
+    fatigue_driving:           2,
+    // ── Video alarms, this standard, Table 14 (bit32–bit63) ──
+    video_signal_loss:         32,
+    video_signal_blocking:     33,
+    storage_unit_failure:      34,
+    other_video_failure:       35,
+    bus_overload:              36,
+    abnormal_driving_behavior: 37,
+    special_alarm_recording:   38,
+};
+
+// Friendly aliases → canonical event name.
+const EVENT_ALIASES = {
+    sos:                  'emergency',
+    speeding:             'overspeed',
+    fatigue:              'fatigue_driving',
+    signal_loss:          'video_signal_loss',
+    loss:                 'video_signal_loss',
+    blocking:             'video_signal_blocking',
+    occlusion:            'video_signal_blocking',
+    storage_failure:      'storage_unit_failure',
+    storage_fault:        'storage_unit_failure',
+    equipment_failure:    'other_video_failure',
+    overload:             'bus_overload',
+    abnormal_driving:     'abnormal_driving_behavior',
+    special_recording:    'special_alarm_recording',
+    special_alarm:        'special_alarm_recording',
+};
+
+function resolveEventName(name) {
+    const key = String(name).trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (key in EVENT_BITS)    return key;
+    if (key in EVENT_ALIASES) return EVENT_ALIASES[key];
+    return null;
+}
+
+// Build a combined 64-bit mask from an optional `events` array AND an optional
+// raw `alarmFlag`. The two are OR'd, so callers can mix named events with raw
+// bits. Returns { mask: BigInt, resolved: [names], unknown: [names] }.
+function buildAlarmMask(events, alarmFlag) {
+    let mask = normalizeAlarmFlag(alarmFlag);   // raw hex/decimal contribution (or 0n)
+    const resolved = [];
+    const unknown  = [];
+
+    if (events !== undefined && events !== null) {
+        const list = Array.isArray(events) ? events : [events];
+        for (const e of list) {
+            const canon = resolveEventName(e);
+            if (canon === null) { unknown.push(String(e)); continue; }
+            mask |= (1n << BigInt(EVENT_BITS[canon]));
+            resolved.push(canon);
+        }
+        if (unknown.length) {
+            warn(`Unknown event name(s) ignored: ${unknown.join(', ')}. Valid: ${Object.keys(EVENT_BITS).join(', ')}`);
+        }
+    }
+
+    return { mask: BigInt.asUintN(64, mask), resolved, unknown };
+}
+
 function nextSeq(phone) {
     _seqMap[phone] = ((_seqMap[phone] || 0) + 1) & 0xFFFF;
     return _seqMap[phone];
@@ -826,7 +953,7 @@ function parseDateTime(dtStr, fallback) {
     return { y, mo, d, h, mi, s };
 }
 
-function build9205(phone, channel, startTime, endTime) {
+function build9205(phone, channel, startTime, endTime, alarmMask = 0n, streamType = 1) {
     const fp   = framePhone(phone);
     const s    = parseDateTime(startTime, '00:00:00');
     const e    = parseDateTime(endTime,   '23:59:59');
@@ -834,12 +961,14 @@ function build9205(phone, channel, startTime, endTime) {
     body[0] = channel;
     bcdBytes(s.y%100, s.mo, s.d, s.h, s.mi, s.s).copy(body, 1);
     bcdBytes(e.y%100, e.mo, e.d, e.h, e.mi, e.s).copy(body, 7);
-    body.fill(0x00, 13, 21);
-    body[21] = 0; body[22] = 0;
+    // Alarm logo (64 bits, big-endian) — event filter; 0 = no alarm condition
+    body.writeBigUInt64BE(BigInt.asUintN(64, BigInt(alarmMask)), 13);
+    body[21] = 0;                              // avType: audio+video
+    body[22] = (streamType === 2 ? 2 : 1);     // stream: 1=main(high), 2=sub(low)
     return buildFrame(0x9205, body, fp);
 }
 
-function build9206(phone, channel, startTime, endTime, folder = '/') {
+function build9206(phone, channel, startTime, endTime, folder = '/', alarmMask = 0n, streamType = 1) {
     const fp      = framePhone(phone);
     const s       = parseDateTime(startTime, '00:00:00');
     const e       = parseDateTime(endTime,   '23:59:59');
@@ -859,11 +988,14 @@ function build9206(phone, channel, startTime, endTime, folder = '/') {
     body[p++] = channel;
     bcdBytes(s.y%100, s.mo, s.d, s.h, s.mi, s.s).copy(body, p); p += 6;
     bcdBytes(e.y%100, e.mo, e.d, e.h, e.mi, e.s).copy(body, p); p += 6;
-    body.fill(0x00, p, p + 8); p += 8;
-    body[p++] = 0;    // avType
-    body[p++] = 1;    // streamType: main
-    body[p++] = 0;    // storageType: all
-    body[p++] = 0x07; // taskCondition: WiFi+LAN+3G/4G
+    // Alarm logo (64 bits, big-endian) — event filter; 0 = no alarm condition
+    //   bit0–bit31  : JT/T 808-2011 Table 18 alarm flags
+    //   bit32–bit63 : video alarm flags (Table 13 of this standard)
+    body.writeBigUInt64BE(BigInt.asUintN(64, BigInt(alarmMask)), p); p += 8;
+    body[p++] = 0;                       // avType
+    body[p++] = (streamType === 2 ? 2 : 1); // streamType: 1=main(high), 2=sub(low)
+    body[p++] = 0;                       // storageType: all
+    body[p++] = 0x07;                    // taskCondition: WiFi+LAN+3G/4G
     return buildFrame(0x9206, body, fp);
 }
 
