@@ -49,6 +49,10 @@ const CONFIG = {
     maxBufferBytes: parseInt(opts.maxBufferBytes  || String(4 * 1024 * 1024)),  // 4MB per socket
     watchdogMs:     parseInt(opts.watchdogMs      || '15000'),  // restart FFmpeg if no frames for 15s
     publicDir:      opts.publicDir                || './public',   // HLS output + static serving root
+    // 'hevc' (H.265) or 'h264'. This MUST match what the camera actually encodes —
+    // it's declared in the PMT stream_type so FFmpeg's demuxer picks the right
+    // decoder. Wrong value here = FFmpeg silently never identifies a valid stream.
+    videoCodec:     (opts.videoCodec || process.env.VIDEO_CODEC || 'hevc').toLowerCase(),
 };
 
 console.log(`[${TAG}] Server IP  : ${CONFIG.serverIp}`);
@@ -56,6 +60,12 @@ console.log(`[${TAG}] TCP        : ${CONFIG.tcpPort}`);
 console.log(`[${TAG}] HTTP       : ${CONFIG.httpPort}`);
 console.log(`[${TAG}] WS         : ${CONFIG.wsPort}`);
 console.log(`[${TAG}] Public dir : ${CONFIG.publicDir}`);
+console.log(`[${TAG}] Video codec: ${CONFIG.videoCodec} (declared in PMT — must match camera's actual encoding)`);
+
+// PMT stream_type values (ISO/IEC 13818-1 + GB/T extensions used by JT/T1078 vendors)
+const STREAM_TYPE_HEVC = 0x24;   // H.265 / AVS
+const STREAM_TYPE_H264 = 0x1B;   // H.264 / AVC
+const PMT_STREAM_TYPE  = CONFIG.videoCodec === 'h264' ? STREAM_TYPE_H264 : STREAM_TYPE_HEVC;
 
 // ── Ensure public folder exists ───────────────────────────────────────────────
 if (!fs.existsSync(CONFIG.publicDir)) fs.mkdirSync(CONFIG.publicDir, { recursive: true });
@@ -386,7 +396,7 @@ function buildPMT() {
     s[8]  = 0xE0 | ((VIDEO_PID >> 8) & 0x1F);
     s[9]  = VIDEO_PID & 0xFF;
     s[10] = 0xF0; s[11] = 0x00;
-    s[12] = 0x24;  // stream_type: AVS
+    s[12] = PMT_STREAM_TYPE;  // stream_type: HEVC (0x24) or H.264 (0x1B) — set via CONFIG.videoCodec
     s[13] = 0xE0 | ((VIDEO_PID >> 8) & 0x1F);
     s[14] = VIDEO_PID & 0xFF;
     s[15] = 0xF0; s[16] = 0x00;

@@ -30,5 +30,11 @@ if (process.env.ACUMEN_ENABLED === 'false') {
         maxBufferBytes: process.env.ACUMEN_MAX_BUF,
         watchdogMs:     process.env.ACUMEN_WATCHDOG_MS,
         publicDir:      './public-acumen',   // separate HLS output dir from Pictor
+        // ⚠️ CONFIRM THIS against Acumen's device/protocol spec before relying on it.
+        // Defaults to 'hevc' (same as Pictor) only because that was the prior
+        // behavior — if Acumen cameras actually encode H.264, set this to 'h264'
+        // via ACUMEN_VIDEO_CODEC in .env. Wrong value = FFmpeg silently never
+        // identifies a decodable stream, which matches the symptom seen so far.
+        videoCodec:     process.env.ACUMEN_VIDEO_CODEC || 'hevc',
     });
 }

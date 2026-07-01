@@ -28,5 +28,6 @@ if (process.env.PICTOR_ENABLED === 'false') {
         maxBufferBytes: process.env.MAX_BUF,
         watchdogMs:     process.env.WATCHDOG_MS,
         publicDir:      './public',   // unchanged — preserves existing stream URLs
+        videoCodec:     process.env.VIDEO_CODEC || 'hevc',   // Pictor devices encode HEVC
     });
 }
