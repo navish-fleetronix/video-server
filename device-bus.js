@@ -3,16 +3,24 @@
 /**
  * device-bus.js
  *
- * Shared event bus between index-pictor.js and ftp-service.js.
- * Neither module imports the other — they only talk through this bus.
+ * Shared event bus between index-pictor.js / index-acumen.js and
+ * ftp-service.js. Receivers don't import each other or ftp-service — they
+ * only talk through this bus.
  *
- * Events emitted by index-pictor.js:
- *   'device:connected'    { phone, socket }
- *   'device:disconnected' { phone }
- *   'device:message'      { msgId, body, seq, phone, socket }
+ * Every event carries a `vendor` field ('pictor' | 'acumen') identifying
+ * which receiver the device is connected to. This matters because phone
+ * numbers are only unique *within* a vendor's fleet — two receivers could
+ * see the same phone number for two different physical devices.
+ *
+ * Events emitted by index-pictor.js / index-acumen.js:
+ *   'device:connected'    { vendor, phone, socket }
+ *   'device:disconnected' { vendor, phone }
+ *   'device:message'      { vendor, msgId, body, seq, phone, socket }
  *
  * Events emitted by ftp-service.js:
- *   'device:send'         { phone, frame }   ← index-pictor writes this to socket
+ *   'device:send'         { vendor, phone, frame }   ← the receiver for that
+ *                                                        vendor writes it to
+ *                                                        the device's socket
  */
 
 const EventEmitter = require('events');

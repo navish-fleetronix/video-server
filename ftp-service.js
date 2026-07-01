@@ -149,7 +149,11 @@ const CURRENT_HASH = 'videoRecInfo';
 const STOPPAGE_VIDEO_RECORDING_TRIGGERED = 'stoppageVideoRecordingTriggered';
 
 function historyKey(phone) {
-    return `ftp:history:${phone}`;
+    const v = vendorOf(phone);
+    // Pictor keeps its original key shape — no migration needed for existing data.
+    // Other vendors get a namespaced key so a colliding phone number can never
+    // read/write Pictor's history (or vice versa).
+    return v === 'pictor' ? `ftp:history:${phone}` : `ftp:history:${v}:${phone}`;
 }
 
 // Save new record → HSET videoRecInfo <phone> <json>  +  LPUSH history
@@ -286,6 +290,16 @@ async function getHistoryFromRedis(phone) {
 const _queue    = {};   // { [phone]: [ job, job, ... ] }
 const _sessions = {};   // { [phone]: job }  — currently active job
 const _seqMap   = {};
+
+// Which vendor (receiver) a phone number currently belongs to. Populated from
+// device:connected. Phone numbers are only guaranteed unique *within* a
+// vendor's fleet — if two different vendors' devices ever share a phone
+// number, this map (last-connected-wins) plus the warning below is the
+// detection point.
+const _phoneVendor = {};
+function vendorOf(phone) {
+    return _phoneVendor[String(phone)] || 'pictor';   // default preserves pre-multi-vendor behavior
+}
 
 // PASV pool
 const _pasvPool = {};
@@ -501,8 +515,13 @@ http.createServer((req, res) => {
 }).listen(HTTP_PORT, '0.0.0.0', () => log(`HTTP API on :${HTTP_PORT}`));
 
 // ── Bus listeners ─────────────────────────────────────────────────────────────
-bus.on('device:connected', ({ phone }) => {
-    log(`Device connected: ${phone}`);
+bus.on('device:connected', ({ vendor, phone }) => {
+    const prev = _phoneVendor[String(phone)];
+    if (prev && vendor && prev !== vendor) {
+        err(`⚠️ Phone ${phone} seen on both '${prev}' and '${vendor}' — number is not unique across vendors, sessions may cross-contaminate`);
+    }
+    if (vendor) _phoneVendor[String(phone)] = vendor;
+    log(`Device connected: ${phone} (${vendorOf(phone)})`);
     _seqMap[phone] = 0;
 });
 
@@ -594,7 +613,7 @@ bus.on('device:message', ({ msgId, body, seq, phone }) => {
         log(`[${phone}] 0x1206 upload result:${result}`);
 
         // ACK back to camera
-        bus.emit('device:send', { phone, frame: buildAck(framePhone(phone), seq, 0x1206) });
+        bus.emit('device:send', { vendor: vendorOf(phone), phone, frame: buildAck(framePhone(phone), seq, 0x1206) });
 
         if (result !== 0) {
             err(`[${phone}] ❌ Upload failed code:${result}`);
@@ -648,7 +667,7 @@ async function processNextInQueue(phone) {
     broadcast({ type: 'status', phone, requestId: job.requestId, message: `▶ Starting download ch${job.ch} ${job.startTime} → ${job.endTime}` });
 
     // Step 1 — query file list
-    bus.emit('device:send', { phone, frame: build9205(phone, job.ch, job.startTime, job.endTime, BigInt(job.alarmMask || '0'), job.streamType || 1) });
+    bus.emit('device:send', { vendor: vendorOf(phone), phone, frame: build9205(phone, job.ch, job.startTime, job.endTime, BigInt(job.alarmMask || '0'), job.streamType || 1) });
     log(`[${phone}] Sent 0x9205`);
 
     // Step 2 — send FTP command after 3s
@@ -656,7 +675,7 @@ async function processNextInQueue(phone) {
         // Check session still matches — may have been cancelled
         if (_sessions[phone]?.requestId !== job.requestId) return;
         const frame = build9206(phone, job.ch, job.startTime, job.endTime, job.folder, BigInt(job.alarmMask || '0'), job.streamType || 1);
-        bus.emit('device:send', { phone, frame });
+        bus.emit('device:send', { vendor: vendorOf(phone), phone, frame });
         log(`[${phone}] Sent 0x9206 folder:${job.folder}`);
         broadcast({ type: 'status', phone, requestId: job.requestId, message: `⏳ FTP command sent to camera...` });
     }, 3000);
@@ -790,7 +809,7 @@ function cancelDownload(phone) {
         broadcast({ type: 'status', phone, message: 'No active download' });
         return;
     }
-    bus.emit('device:send', { phone, frame: build9207(phone, 0, 2) });
+    bus.emit('device:send', { vendor: vendorOf(phone), phone, frame: build9207(phone, 0, 2) });
     updateRedis(phone, session.requestId, { status: 'failed', error: 'Cancelled by user' });
     broadcast({ type: 'status', phone, message: '🛑 Download cancelled' });
     log(`[${phone}] Cancelled requestId:${session.requestId}`);

@@ -3,7 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // server.js  —  single entry point
 //
-// Loads both services in the SAME process so device-bus.js EventEmitter
+// Loads all services in the SAME process so device-bus.js EventEmitter
 // is shared in memory between them.
 //
 // Usage:
@@ -13,3 +13,4 @@
 
 require('./ftp-service');
 require('./index-pictor');
+require('./index-acumen');
