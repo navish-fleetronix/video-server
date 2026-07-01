@@ -453,11 +453,33 @@ function writeToFFmpeg(cam, phone, data) {
 }
 
 // ── Handle one complete decoded video frame ───────────────────────────────────
-function handleVideoFrame(frameData, phone, dataType) {
+function handleVideoFrame(frameData, phone, dataType, deviceTs) {
     const cam = cameras[phone];
     if (!cam || cam.restarting) return;
 
     // dataType: 0=I-frame  1=P-frame  2=B-frame  3=audio  4=transparent
+    // PTS: derive real frame-to-frame spacing from the DEVICE's own timestamp
+    // delta, not from when bytes happened to arrive at our socket (Date.now()).
+    // Wall-clock sampling is noisy under network jitter/bursts and produces
+    // bogus PTS spacing — that's what causes FFmpeg to report nonsense frame
+    // rates like "90k tbr" instead of the camera's real fps, which in turn can
+    // stall the HLS segmenter indefinitely (never writes a completed segment).
+    const ASSUMED_FRAME_INTERVAL_MS = 1000 / 15;  // fallback only — used when delta looks bogus
+    if (cam.ptsAccumMs === undefined) cam.ptsAccumMs = 0;
+    if (deviceTs !== null && deviceTs !== undefined && cam.lastDeviceTs !== undefined) {
+        const deltaMs = Number(deviceTs - cam.lastDeviceTs);
+        // Sanity bound: real inter-frame gaps should be well under a few
+        // seconds. Reject negative (clock wraparound/reset) or absurd deltas.
+        if (deltaMs > 0 && deltaMs < 5000) {
+            cam.ptsAccumMs += deltaMs;
+        } else {
+            cam.ptsAccumMs += ASSUMED_FRAME_INTERVAL_MS;
+        }
+    } else {
+        cam.ptsAccumMs += ASSUMED_FRAME_INTERVAL_MS;
+    }
+    if (deviceTs !== null && deviceTs !== undefined) cam.lastDeviceTs = deviceTs;
+
     const isVideo = dataType === 0 || dataType === 1 || dataType === 2;
 
     // One-time raw diagnostic per camera — shows exactly what bytes the
@@ -514,7 +536,7 @@ function handleVideoFrame(frameData, phone, dataType) {
         broadcast({ type: 'stream_started', phone, stream: `${PUBLIC_URL_PREFIX}/${phone}.m3u8` });
     }
 
-    const { packets, nextCounter } = wrapFrameInTS(frameData, cam.tsCounter, Date.now());
+    const { packets, nextCounter } = wrapFrameInTS(frameData, cam.tsCounter, cam.ptsAccumMs);
     cam.tsCounter  = nextCounter;
     cam.lastFrameAt = Date.now();
     cam.frameCount++;
@@ -541,17 +563,22 @@ function handleVideoFrame(frameData, phone, dataType) {
 }
 
 // ── Reassemble split RTP subpackets ──────────────────────────────────────────
-function processVideoPacket(rawData, phone, dataType, subpktMarker) {
+function processVideoPacket(rawData, phone, dataType, subpktMarker, deviceTs) {
     const cam = cameras[phone];
     if (!cam) return;
 
     // subpktMarker: 0=atomic  1=first  3=middle  2=last
+    // deviceTs is only meaningful at the start of a logical frame — later
+    // fragments of the same frame carry their own copy of the field per the
+    // physical-packet header, but it's the first fragment's value that
+    // represents this frame's actual capture time.
     switch (subpktMarker) {
         case 0:
-            handleVideoFrame(rawData, phone, dataType);
+            handleVideoFrame(rawData, phone, dataType, deviceTs);
             break;
         case 1:
             cam.subpackets = [rawData];
+            cam.subpacketDeviceTs = deviceTs;
             break;
         case 3:
             if (cam.subpackets.length > 0) cam.subpackets.push(rawData);
@@ -559,7 +586,7 @@ function processVideoPacket(rawData, phone, dataType, subpktMarker) {
         case 2:
             if (cam.subpackets.length > 0) {
                 cam.subpackets.push(rawData);
-                handleVideoFrame(Buffer.concat(cam.subpackets), phone, dataType);
+                handleVideoFrame(Buffer.concat(cam.subpackets), phone, dataType, cam.subpacketDeviceTs);
                 cam.subpackets = [];
             }
             break;
@@ -756,6 +783,13 @@ const tcpServer = net.createServer(socket => {
                     const subpktMarker = byte15 & 0x0F;
                     const rawData      = buffer.slice(offset + 30, offset + 30 + dataBodyLen);
 
+                    // Device's own per-frame timestamp (Table 19, offset 16, BYTE[8]).
+                    // Not present for transparent-data frames (dataType 4). We don't trust
+                    // its absolute value (format/epoch varies by vendor) — only the DELTA
+                    // between consecutive frames, which is what actually drives correct
+                    // FFmpeg frame-rate detection instead of noisy wall-clock sampling.
+                    const deviceTs = dataType !== 4 ? buffer.readBigUInt64BE(offset + 16) : null;
+
                     const camPhone = streamPhone || phone;
                     if (camPhone && cameras[camPhone]) {
                         // Mark that this socket is a stream socket for this camera
@@ -769,7 +803,7 @@ const tcpServer = net.createServer(socket => {
                                 startFFmpeg(camPhone);
                             }
                         }
-                        processVideoPacket(rawData, camPhone, dataType, subpktMarker);
+                        processVideoPacket(rawData, camPhone, dataType, subpktMarker, deviceTs);
                     } else if (!streamPacketWarned) {
                         // No registered camera matches this stream packet's SIM — packet is
                         // dropped. Logged once per connection (not per-packet) since this can
