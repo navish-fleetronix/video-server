@@ -137,85 +137,23 @@ redis = connectRedis();
 
 // ── Redis helpers ─────────────────────────────────────────────────────────────
 //
-// Structure:
+// ── Redis ─────────────────────────────────────────────────────────────────────
+// Only ONE Redis hash used:
 //
-// HASH  videoRecInfo            ← current operation per phone
-//   field: <phone>               value: JSON string
+// HASH  stoppageVideoRecordingTriggered
+//   field: <folder>   (e.g. 15760064474_tripId_20260702T083914)
+//   value: JSON { folder, phone, requestId, status, blobUrl, blobPath,
+//                 startTime, endTime, createdAt, updatedAt, error }
 //
-// LIST  ftp:history:<phone>     ← full history per phone (newest first, max 50)
-//   each item: JSON string
+// folder is used as key so duplicate requests for the same folder are blocked.
 
-const CURRENT_HASH = 'videoRecInfo';
-const STOPPAGE_VIDEO_RECORDING_TRIGGERED = 'stoppageVideoRecordingTriggered';
+const STOPPAGE_HASH = 'stoppageVideoRecordingTriggered';
 
-function historyKey(phone) {
-    return `ftp:history:${phone}`;
-}
-
-// Save new record → HSET videoRecInfo <phone> <json>  +  LPUSH history
-async function saveToRedis(record) {
-    if (!redis) return;
-    try {
-        record.updatedAt = new Date().toISOString();
-        const json = JSON.stringify(record);
-
-        // 1. Current — HSET videoRecInfo <phone> <json>
-        await redis.hset(CURRENT_HASH, record.phone, json);
-
-        // 2. History — LPUSH ftp:history:<phone> <json>  (cap at 50)
-        const hKey = historyKey(record.phone);
-        await redis.lpush(hKey, json);
-        await redis.ltrim(hKey, 0, 49);
-        await redis.expire(hKey, REDIS_TTL);
-
-        log(`Redis HSET ${CURRENT_HASH}[${record.phone}] requestId:${record.requestId} status:${record.status}`);
-    } catch (e) {
-        err('Redis save error:', e.message);
-    }
-}
-
-// Update current record — HGET → merge → HSET  +  update matching history entry
-async function updateRedis(phone, requestId, patch) {
-    if (!redis) return;
-    try {
-        const now = new Date().toISOString();
-
-        //update the stoppageVideoRecordingTriggered
-        const existingStoppageVideoRecordingTriggered = await redis.hget(STOPPAGE_VIDEO_RECORDING_TRIGGERED, requestId);
-        if (existingStoppageVideoRecordingTriggered) {
-            const stopValue = JSON.parse(existingStoppageVideoRecordingTriggered);
-            const currentData = { ...patch, updatedAt: now };
-            await redis.hset(STOPPAGE_VIDEO_RECORDING_TRIGGERED, requestId, JSON.stringify(currentData));
-        }
-
-        // 1. Update current hash
-        const existing = await redis.hget(CURRENT_HASH, phone);
-        if (!existing) { warn(`Redis HGET ${CURRENT_HASH}[${phone}] — not found`); return; }
-        const current = { ...JSON.parse(existing), ...patch, updatedAt: now };
-        await redis.hset(CURRENT_HASH, phone, JSON.stringify(current));
-
-        // 2. Update matching history entry
-        const hKey = historyKey(phone);
-        const items = await redis.lrange(hKey, 0, 49);
-        for (let i = 0; i < items.length; i++) {
-            const item = JSON.parse(items[i]);
-            if (item.requestId === requestId) {
-                await redis.lset(hKey, i, JSON.stringify({ ...item, ...patch, updatedAt: now }));
-                break;
-            }
-        }
-
-        log(`Redis HSET ${CURRENT_HASH}[${phone}] requestId:${requestId} status:${patch.status || current.status}`);
-    } catch (e) {
-        err('Redis update error:', e.message);
-    }
-}
-
-// HGET videoRecInfo <phone>
-async function getCurrentFromRedis(phone) {
+// ── Check if folder already processed ────────────────────────────────────────
+async function getStoppageRecord(folder) {
     if (!redis) return null;
     try {
-        const raw = await redis.hget(CURRENT_HASH, phone);
+        const raw = await redis.hget(STOPPAGE_HASH, folder);
         return raw ? JSON.parse(raw) : null;
     } catch (e) {
         err('Redis hget error:', e.message);
@@ -223,61 +161,112 @@ async function getCurrentFromRedis(phone) {
     }
 }
 
-// HGETALL videoRecInfo  → all phones
-async function getAllCurrentFromRedis() {
-    if (!redis) return {};
+// ── Save new record keyed by folder ──────────────────────────────────────────
+async function saveStoppageRecord(folder, data) {
+    if (!redis) return;
     try {
-        const all = await redis.hgetall(CURRENT_HASH);
-        if (!all) return {};
-        const result = {};
-        for (const [phone, raw] of Object.entries(all)) {
-            try { result[phone] = JSON.parse(raw); } catch (_) {}
-        }
-        return result;
+        const record = { ...data, updatedAt: new Date().toISOString() };
+        await redis.hset(STOPPAGE_HASH, folder, JSON.stringify(record));
+        log(`Redis HSET ${STOPPAGE_HASH}[${folder}] status:${data.status}`);
     } catch (e) {
-        err('Redis hgetall error:', e.message);
-        return {};
+        err('Redis save error:', e.message);
     }
 }
 
-// Find by requestId — check current hash first, then scan history
+// ── Update existing record ────────────────────────────────────────────────────
+async function updateStoppageRecord(folder, patch) {
+    if (!redis) return;
+    try {
+        const existing = await redis.hget(STOPPAGE_HASH, folder);
+        if (!existing) return;
+        const record = { ...JSON.parse(existing), ...patch, updatedAt: new Date().toISOString() };
+        await redis.hset(STOPPAGE_HASH, folder, JSON.stringify(record));
+        log(`Redis updated ${STOPPAGE_HASH}[${folder}] status:${record.status}`);
+    } catch (e) {
+        err('Redis update error:', e.message);
+    }
+}
+
+// ── Delete a record (used when file not found in Azure after failure) ─────────
+async function deleteStoppageRecord(folder) {
+    if (!redis) return;
+    try {
+        await redis.hdel(STOPPAGE_HASH, folder);
+        log(`Redis deleted ${STOPPAGE_HASH}[${folder}]`);
+    } catch (e) {
+        err('Redis delete error:', e.message);
+    }
+}
+
+// ── Kept for API compatibility (ftp-status, ftp-current, ftp-history) ─────────
+// These now read from stoppageVideoRecordingTriggered only
 async function getByRequestId(requestId) {
     if (!redis) return null;
     try {
-        // Check current hash first (fast)
-        const all = await redis.hgetall(CURRENT_HASH);
-        if (all) {
-            for (const raw of Object.values(all)) {
-                const rec = JSON.parse(raw);
-                if (rec.requestId === requestId) return rec;
-            }
-        }
-        // Scan history lists
-        const historyKeys = await redis.keys('ftp:history:*');
-        for (const hKey of historyKeys) {
-            const items = await redis.lrange(hKey, 0, 49);
-            for (const raw of items) {
-                const rec = JSON.parse(raw);
-                if (rec.requestId === requestId) return rec;
-            }
+        const all = await redis.hgetall(STOPPAGE_HASH);
+        if (!all) return null;
+        for (const raw of Object.values(all)) {
+            const rec = JSON.parse(raw);
+            if (rec.requestId === requestId) return rec;
         }
         return null;
-    } catch (e) {
-        err('Redis getByRequestId error:', e.message);
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-// LRANGE ftp:history:<phone> 0 49
+async function getCurrentFromRedis(phone) {
+    if (!redis) return null;
+    try {
+        const all = await redis.hgetall(STOPPAGE_HASH);
+        if (!all) return null;
+        const entries = Object.values(all)
+            .map(r => { try { return JSON.parse(r); } catch (_) { return null; } })
+            .filter(r => r && r.phone === phone)
+            .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+        return entries[0] || null;
+    } catch (e) { return null; }
+}
+
+async function getAllCurrentFromRedis() {
+    if (!redis) return {};
+    try {
+        const all = await redis.hgetall(STOPPAGE_HASH);
+        if (!all) return {};
+        const result = {};
+        for (const [folder, raw] of Object.entries(all)) {
+            try { result[folder] = JSON.parse(raw); } catch (_) {}
+        }
+        return result;
+    } catch (e) { return {}; }
+}
+
 async function getHistoryFromRedis(phone) {
     if (!redis) return [];
     try {
-        const items = await redis.lrange(historyKey(phone), 0, 49);
-        return items.map(raw => { try { return JSON.parse(raw); } catch (_) { return null; } }).filter(Boolean);
-    } catch (e) {
-        err('Redis history error:', e.message);
-        return [];
-    }
+        const all = await redis.hgetall(STOPPAGE_HASH);
+        if (!all) return [];
+        return Object.values(all)
+            .map(r => { try { return JSON.parse(r); } catch (_) { return null; } })
+            .filter(r => r && r.phone === phone)
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (e) { return []; }
+}
+
+// Stubs to avoid breaking existing call sites
+async function saveToRedis() {}
+async function updateRedis(phone, requestId, patch) {
+    // Find folder for this requestId and update it
+    if (!redis) return;
+    try {
+        const all = await redis.hgetall(STOPPAGE_HASH);
+        if (!all) return;
+        for (const [folder, raw] of Object.entries(all)) {
+            const rec = JSON.parse(raw);
+            if (rec.requestId === requestId) {
+                await updateStoppageRecord(folder, patch);
+                break;
+            }
+        }
+    } catch (e) { err('updateRedis error:', e.message); }
 }
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -560,23 +549,26 @@ bus.on('device:message', ({ msgId, body, seq, phone }) => {
             broadcast({ type: 'error', phone, message: '⚠️ Camera found 0 files for this time range' });
             const session = _sessions[phone];
             if (session) {
-                updateRedis(phone, session.requestId, { status: 'failed', error: '0 files found on camera' });
-                jobFinished(phone);  // ← move to next
+                // Mark as no_files — blocks retries for this folder
+                await updateStoppageRecord(session.folderKey, {
+                    status: 'no_files',
+                    error:  '0 files found on camera SD card for this time range',
+                });
+                jobFinished(phone, '0-files');
             }
         } else {
             broadcast({ type: 'status', phone, message: `📁 Camera found ${totalFiles} file(s)` });
             const session = _sessions[phone];
             if (session) {
-                session.expectedFiles = totalFiles;          // upper bound reported by camera
+                session.expectedFiles = totalFiles;
                 session.startedFiles  = session.startedFiles  || 0;
                 session.resolvedFiles = session.resolvedFiles || 0;
                 session.savedFiles    = session.savedFiles    || 0;
                 session.cameraDone    = false;
-                // Safety net — advance the queue even if the camera never says "done"
                 if (session._jobTimeout) clearTimeout(session._jobTimeout);
                 session._jobTimeout = setTimeout(() => {
                     warn(`[${phone}] Job timeout — saved ${session.savedFiles}/${totalFiles} file(s)`);
-                    updateRedis(phone, session.requestId, {
+                    updateStoppageRecord(session.folderKey, {
                         status: session.savedFiles > 0 ? 'partial' : 'failed',
                         error:  `Timed out: ${session.savedFiles}/${totalFiles} saved`,
                     });
@@ -695,91 +687,119 @@ async function triggerDownload({ phone, ch, startTime, endTime, folder, requestK
     phone = String(phone);
     if (!folder) folder = `/${phone}/`;
 
-    // Quality → stream type (Table 26): 1 = main stream (high), 2 = sub stream (low)
     const streamType = normalizeStreamType(quality);
-    // Alarm/event filter (Table 26 alarm logo, 64-bit). Combines named `events`
-    // with any raw `alarmFlag`. Empty/unset on both → 0n = no filter (all recordings).
     const { mask: alarmMask, resolved: events_resolved, unknown: events_unknown } = buildAlarmMask(events, alarmFlag);
-
     const requestId = requestKey || crypto.randomBytes(8).toString('hex');
     const createdAt = new Date().toISOString();
 
+    // ── Folder key (strip leading/trailing slashes for consistent Redis key) ──
+    const folderKey = folder.replace(/^\/+|\/+$/g, '');
+
+    // ── DUPLICATE CHECK — if folder already processed, skip ──────────────────
+    const existing = await getStoppageRecord(folderKey);
+    if (existing) {
+        if (existing.status === 'complete' && existing.blobUrl) {
+            log(`[${phone}] Duplicate blocked — folder:${folderKey} already complete blobUrl:${existing.blobUrl}`);
+            return {
+                requestId:    existing.requestId,
+                status:       'complete',
+                duplicate:    true,
+                blobUrl:      existing.blobUrl,
+                blobPath:     existing.blobPath,
+                message:      'Already processed. File available at blobUrl.',
+            };
+        }
+        if (existing.status === 'no_files') {
+            log(`[${phone}] Duplicate blocked — folder:${folderKey} previously had 0 files`);
+            return {
+                requestId:    existing.requestId,
+                status:       'no_files',
+                duplicate:    true,
+                message:      'Camera had 0 files for this time range. Not retrying.',
+            };
+        }
+        if (existing.status === 'queued' || existing.status === 'in_progress') {
+            log(`[${phone}] Duplicate blocked — folder:${folderKey} already ${existing.status}`);
+            return {
+                requestId:    existing.requestId,
+                status:       existing.status,
+                duplicate:    true,
+                message:      `Already ${existing.status}.`,
+            };
+        }
+        // status === 'failed' → check Azure before retrying
+        if (existing.status === 'failed' && containerClient) {
+            const expectedBlob = `${folderKey}/vehicle-monitoring-trip.MP4`;
+            try {
+                const blobClient = containerClient.getBlockBlobClient(expectedBlob);
+                const exists = await blobClient.exists();
+                if (exists) {
+                    // File is in Azure despite failed status — update and return
+                    const blobUrl = blobClient.url;
+                    await updateStoppageRecord(folderKey, { status: 'complete', blobUrl, blobPath: expectedBlob });
+                    log(`[${phone}] Failed record recovered — file found in Azure: ${expectedBlob}`);
+                    return { requestId: existing.requestId, status: 'complete', duplicate: true, blobUrl, message: 'File found in Azure.' };
+                } else {
+                    // Not in Azure — delete Redis key and retry
+                    await deleteStoppageRecord(folderKey);
+                    log(`[${phone}] Failed record removed — file not in Azure, retrying: ${folderKey}`);
+                }
+            } catch (e) {
+                err('Azure exists check error:', e.message);
+            }
+        }
+    }
+
     // Init queue for this phone
     if (!_queue[phone]) _queue[phone] = [];
-
     const queuePosition = _queue[phone].length + (_sessions[phone] ? 1 : 0);
 
-    log(`▶ triggerDownload requestId:${requestId} phone:${phone} ch:${ch} ${startTime} → ${endTime} stream:${streamType === 2 ? 'sub/low' : 'main/high'} alarm:0x${alarmMask.toString(16)} queuePos:${queuePosition}`);
+    log(`▶ triggerDownload requestId:${requestId} phone:${phone} ch:${ch} ${startTime} → ${endTime} folder:${folderKey} queuePos:${queuePosition}`);
 
-    // Build job — alarmMask stored as string so Redis JSON stays serializable
-    const job = { requestId, phone, ch, startTime, endTime, folder, streamType, alarmMask: alarmMask.toString(), sentAt: null };
+    const job = { requestId, phone, ch, startTime, endTime, folder, folderKey, streamType, alarmMask: alarmMask.toString(), sentAt: null };
 
-    // Save to Redis as queued
-    const record = {
+    // Save initial record to stoppageVideoRecordingTriggered keyed by folder
+    await saveStoppageRecord(folderKey, {
         requestId,
         phone,
         ch,
         startTime,
         endTime,
-        folder,
+        folder:       folderKey,
         streamType,
-        quality:        streamType === 2 ? 'low' : 'high',
-        alarmFlag:      alarmMask.toString(),
-        events:         events_resolved,
-        status:         'queued',
+        quality:      streamType === 2 ? 'low' : 'high',
+        alarmFlag:    alarmMask.toString(),
+        status:       'queued',
         queuePosition,
-        filePath:       null,
-        filename:       null,
-        url:            null,
-        fileSize:       null,
+        blobUrl:      null,
+        blobPath:     null,
+        filename:     null,
+        fileSize:     null,
         createdAt,
-        updatedAt:      createdAt,
-        error:          null,
-    };
-    await saveToRedis(record);
+        error:        null,
+    });
 
-    // Push to queue
     _queue[phone].push(job);
 
-    broadcast({
-        type:     'status',
-        phone,
-        requestId,
-        message:  queuePosition === 0
-            ? `▶ Starting immediately`
-            : `⏳ Queued at position ${queuePosition}`,
-    });
+    broadcast({ type: 'status', phone, requestId, message: queuePosition === 0 ? `▶ Starting immediately` : `⏳ Queued at position ${queuePosition}` });
 
-    // Update queue positions for all waiting jobs
     _queue[phone].forEach((j, i) => {
-        updateRedis(phone, j.requestId, { queuePosition: i + 1 });
+        updateStoppageRecord(j.folderKey, { queuePosition: i + 1 });
     });
 
-    // Start processing if nothing active
-    if (!_sessions[phone]) {
-        processNextInQueue(phone);
-    }
+    if (!_sessions[phone]) processNextInQueue(phone);
 
     return {
         requestId,
-        status:       'queued',
+        status:        'queued',
         queuePosition,
         phone,
         ch,
         startTime,
         endTime,
-        folder,
-        quality:      streamType === 2 ? 'low' : 'high',
-        streamType,
-        alarmFlag:    alarmMask.toString(),
-        events:       events_resolved,
-        eventsIgnored: events_unknown,
-        trackUrl:     `/api/ftp-status/${requestId}`,
-        historyUrl:   `/api/ftp-history/${phone}`,
-        queueUrl:     `/api/ftp-queue/${phone}`,
-        message:      queuePosition === 0
-            ? 'Starting immediately.'
-            : `Queued at position ${queuePosition}. ${_queue[phone].length} job(s) waiting.`,
+        folder:        folderKey,
+        trackUrl:      `/api/ftp-status/${requestId}`,
+        message:       queuePosition === 0 ? 'Starting immediately.' : `Queued at position ${queuePosition}.`,
     };
 }
 
@@ -1124,28 +1144,8 @@ function makeFtpHandler() {
                             break;
                         }
 
-                        // Custom rename if set
-                        let finalFilename = filename;
-                        const customName = process.env.CUSTOM_FILENAME || null;
-                        if (customName) {
-                            const ext = path.extname(filename);
-                            finalFilename = customName.endsWith(ext) ? customName : `${customName}${ext}`;
-                        }
-
-                        // ── Make blob name UNIQUE per file ──────────────────────────
-                        // Camera may upload several files per request, and CUSTOM_FILENAME
-                        // (if set) is identical for every one — without this they all
-                        // overwrite the same blob, so only the last survives.
-                        const sess    = ftpPhone ? _sessions[ftpPhone] : null;
-                        const fileSeq = sess ? ((sess.startedFiles || 0) + 1) : 1;
-                        if (sess) sess.startedFiles = fileSeq;
-                        {
-                            const ext2 = path.extname(finalFilename);
-                            const stem = path.basename(finalFilename, ext2);
-                            finalFilename = capturedRequestId
-                                ? `${capturedRequestId}_${String(fileSeq).padStart(2, '0')}_${stem}${ext2}`
-                                : `${Date.now()}_${stem}${ext2}`;
-                        }
+                        // Fixed filename — easy to find in Azure
+                        let finalFilename = 'vehicle-monitoring-trip.MP4';
 
                         const blobPath = `${ftpFolder || ftpPhone || 'unknown'}/${finalFilename}`;
                         const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
@@ -1176,31 +1176,25 @@ function makeFtpHandler() {
                                 fileSize,
                             });
 
-                            if (ftpPhone && capturedRequestId) {
+                            if (ftpPhone) {
                                 const session = _sessions[ftpPhone];
                                 if (session && session.requestId === capturedRequestId) {
                                     session.savedFiles    = (session.savedFiles    || 0) + 1;
                                     session.resolvedFiles = (session.resolvedFiles || 0) + 1;
                                 }
-                                const saved    = session ? session.savedFiles : 1;
-                                const expected = session ? (session.expectedFiles || 1) : 1;
-
-                                await updateRedis(ftpPhone, capturedRequestId, {
-                                    status:        (session && saved < expected && !session.cameraDone) ? 'in_progress' : 'complete',
-                                    filePath:      null,
-                                    filename:      finalFilename,
-                                    url:           blobUrl,
+                                // Update stoppageVideoRecordingTriggered keyed by folder
+                                await updateStoppageRecord(ftpFolder, {
+                                    status:   'complete',
                                     blobUrl,
                                     blobPath,
-                                    storedIn:      'azure-blob',
+                                    filename: finalFilename,
                                     fileSize,
-                                    filesSaved:    saved,
-                                    filesExpected: expected,
+                                    storedIn: 'azure-blob',
                                 });
-                                log(`[${ftpPhone}] file ${saved}/${expected} saved → ${blobPath}`);
+                                log(`[${ftpPhone}] saved → ${blobPath}`);
                                 maybeFinish(ftpPhone);
                             } else {
-                                log(`⚠️ No requestId captured — Redis not updated. phone:${ftpPhone}`);
+                                log(`⚠️ No phone identified — Redis not updated`);
                             }
 
                             if (assignedPort) { freePasvPort(assignedPort); assignedPort = null; }
@@ -1211,17 +1205,16 @@ function makeFtpHandler() {
                             completed = true;
                             err(`Blob upload error for ${blobPath}:`, e.message);
                             reply(426, 'Transfer aborted — storage upload failed');
-                            if (ftpPhone && capturedRequestId) {
+                            if (ftpPhone) {
                                 const session = _sessions[ftpPhone];
                                 if (session && session.requestId === capturedRequestId) {
                                     session.resolvedFiles = (session.resolvedFiles || 0) + 1;
                                 }
-                                updateRedis(ftpPhone, capturedRequestId, {
+                                // Mark failed — next request will check Azure and retry if needed
+                                updateStoppageRecord(ftpFolder, {
                                     status: 'failed',
                                     error:  `Azure Blob upload failed: ${e.message}`,
                                 });
-                                // One file failed — don't kill the whole job; let the
-                                // remaining files finish, then advance.
                                 maybeFinish(ftpPhone);
                             }
                             if (assignedPort) { freePasvPort(assignedPort); assignedPort = null; }
