@@ -39,6 +39,7 @@ const CONFIG = {
     maxBufferBytes: parseInt(process.env.MAX_BUF       || String(4 * 1024 * 1024)),  // 4MB per socket
     watchdogMs:     parseInt(process.env.WATCHDOG_MS   || '15000'),  // restart FFmpeg if no frames for 15s
     streamReconnectMs: parseInt(process.env.STREAM_RECONNECT_MS || '60000'), // re-request 0x9101 if stream socket missing this long
+    zombieStreamMs: parseInt(process.env.ZOMBIE_STREAM_MS || '45000'), // force-close stream socket if "connected" but frame-dead this long
 };
 
 console.log(`[Pictor] Server IP  : ${CONFIG.serverIp}`);
@@ -334,6 +335,24 @@ function startWatchdog(phone) {
 
             console.warn(`[Watchdog ${phone}] No frames for ${age}ms — restarting FFmpeg`);
             cameras[phone].ffmpeg.kill('SIGKILL');
+
+            // ── FIX: zombie stream socket detection ─────────────────────────────
+            // A socket can stay "connected" at the TCP level (never triggers our
+            // setTimeout/keepalive, so hasStreamSocket never flips false) while
+            // no longer delivering usable video — e.g. it's sending *something*
+            // periodically (junk/partial packets) that resets the inactivity
+            // timer without ever producing a decodable frame. Without this check,
+            // the watchdog above just restarts FFmpeg forever against a dead
+            // source (this is what caused the 49-minute restart loop overnight).
+            // If frames have been missing for much longer than one watchdog
+            // cycle should ever allow, treat the socket itself as dead and force
+            // it closed — this triggers the normal socket 'close' handler, which
+            // sets hasStreamSocket=false and lets the 0x9101 reconnect logic
+            // above take over on the next tick.
+            if (age > CONFIG.zombieStreamMs && cameras[phone].streamSocket) {
+                console.warn(`[Watchdog ${phone}] Stream socket alive but frame-dead for ${Math.round(age / 1000)}s — forcing it closed`);
+                cameras[phone].streamSocket.destroy();
+            }
         }
     }, 5000);
 }
