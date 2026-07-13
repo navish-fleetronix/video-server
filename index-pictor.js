@@ -46,6 +46,16 @@ const CONFIG = {
     // How long a camera can go with no video frames before we fire a TCP
     // alert to the remote server (via tcp-forwarder.js). Defaults to 30s.
     streamStallAlertMs: parseInt(process.env.STREAM_STALL_ALERT_MS || '30000'),
+
+    // How long a device can go with no GPS (0x0200) reports before that
+    // also counts as an interruption. Defaults to 30s.
+    gpsStallAlertMs: parseInt(process.env.GPS_STALL_ALERT_MS || '30000'),
+
+    // Which condition(s) should trigger the STREAM_INTRUPPED alert:
+    //   'stream' → only when video stream stalls
+    //   'gps'    → only when GPS reports stop
+    //   'both'   → either one stalling fires the alert (default)
+    alertOn: (process.env.ALERT_ON || 'both').toLowerCase(),
 };
 
 console.log(`[Pictor] Server IP  : ${CONFIG.serverIp}`);
@@ -59,6 +69,7 @@ if (!fs.existsSync('./public')) fs.mkdirSync('./public');
 // ── Per-camera state ──────────────────────────────────────────────────────────
 const cameras    = {};   // { [phone]: CameraState }
 const tcpSockets = {};   // { [phone]: net.Socket }
+const lastGps    = {};   // { [phone]: { ...gpsRecordFields, receivedAt } }
 
 function makeCamera() {
     return {
@@ -288,10 +299,20 @@ function startWatchdog(phone) {
         const age = Date.now() - cameras[phone].lastFrameAt;
 
         // ── Stall alert — fire once per stall to the remote TCP server ─────
-        if (age > CONFIG.streamStallAlertMs) {
+        const streamDown = age > CONFIG.streamStallAlertMs;
+        const gpsDown     = lastGps[phone]
+            ? (Date.now() - lastGps[phone].receivedAt) > CONFIG.gpsStallAlertMs
+            : false;
+
+        let alertCondition = false;
+        if (CONFIG.alertOn === 'stream')      alertCondition = streamDown;
+        else if (CONFIG.alertOn === 'gps')    alertCondition = gpsDown;
+        else /* 'both' */                     alertCondition = streamDown || gpsDown;
+
+        if (alertCondition) {
             if (!cameras[phone].stallAlertSent) {
                 cameras[phone].stallAlertSent = true;
-                tcpForwarder.sendStreamAlert(phone, age);
+                tcpForwarder.sendStreamAlert(phone, lastGps[phone]);
             }
         } else {
             cameras[phone].stallAlertSent = false;
@@ -770,8 +791,7 @@ const tcpServer = net.createServer(socket => {
                             gps.alarms.join('|') || 'NONE',
                         ];
 
-                        tcpForwarder.sendGpsRecord({
-                            phone,      datetime: gps.datetime,
+                        const gpsSnapshot = {
                             latitude:   gps.lat,  longitude: gps.lon,
                             speed_kmh:  gps.speed, direction_deg: gps.direction,
                             elevation_m: gps.elevation,
@@ -785,8 +805,16 @@ const tcpServer = net.createServer(socket => {
                             oil_circuit:     gps.oil_circuit,
                             vehicle_circuit: gps.vehicle_circuit,
                             door:            gps.door,
+                        };
+
+                        tcpForwarder.sendGpsRecord({
+                            phone,      datetime: gps.datetime,
+                            ...gpsSnapshot,
                             alarms:          gps.alarms.join('|') || 'NONE',
                         });
+
+                        // Cache for STREAM_INTRUPPED alerts + mark GPS as fresh
+                        lastGps[phone] = { ...gpsSnapshot, receivedAt: Date.now() };
 
                         const logFile = `./gps_log_${phone}_${new Date().toISOString().slice(0,10)}.txt`;
                         fs.appendFile(logFile, record.join(',') + '\n', e => {

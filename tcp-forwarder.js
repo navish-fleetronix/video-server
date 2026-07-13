@@ -163,29 +163,48 @@ function _send(bufferOrString) {
 }
 
 /**
- * sendStreamAlert(phone, downMs)
+ * sendStreamAlert(phone, gpsSnapshot)
  *
- * Sends a simple CSV alert line when a camera's video stream has stalled
- * (no frames received) for longer than STREAM_STALL_ALERT_MS (see .env,
- * consumed in index-pictor.js). Kept as plain CSV so it lands on the same
- * TCP pipe/parser as the GPS records — adjust the format if your remote
- * server expects something else (e.g. JSON).
+ * Sends a CSV alert line in the SAME shape as a normal GPS record (see
+ * sendGpsRecord above), but using the last known GPS values for that phone
+ * and 'STREAM_INTRUPPED' in the alarms field instead of the real alarm list.
+ * Fired for a video-stream stall, a GPS-interruption, or both — see
+ * CONFIG.alertOn in index-pictor.js for which one(s) trigger it.
+ *
+ * gpsSnapshot: the last object passed to sendGpsRecord() for this phone, or
+ *              null/undefined if no GPS has ever been received yet.
  *
  * Example output:
- *   ALERT,STREAM_STOPPED,1576064474,2026-05-13 19:49:03,32104
+ *   100015760064716,2026-07-13 11:34:50,17.437459,78.368806,0,57,497,ON,YES,0.1,0,24,24,0,NORMAL,NORMAL,CLOSED,STREAM_INTRUPPED
  */
-function sendStreamAlert(phone, downMs) {
+function sendStreamAlert(phone, gpsSnapshot) {
     const paddedPhone = `1000${phone}`;
-    const line = [
-        'ALERT',
-        'STREAM_STOPPED',
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const g = gpsSnapshot || {};
+
+    const csv = [
         paddedPhone,
-        new Date().toISOString().replace('T', ' ').substring(0, 19),
-        downMs,
+        now,                          // alert time, not the last GPS fix time
+        g.latitude      ?? 0,
+        g.longitude     ?? 0,
+        g.speed_kmh      ?? 0,
+        g.direction_deg  ?? 0,
+        g.elevation_m    ?? 0,
+        g.acc            ?? 'OFF',
+        g.located        ?? 'NO',
+        g.mileage        ?? '0',
+        g.voltage        ?? '0',
+        g.satellites     ?? '0',
+        g.signal         ?? '0',
+        g.sensor_speed   ?? '0',
+        g.oil_circuit    ?? 'NORMAL',
+        g.vehicle_circuit ?? 'NORMAL',
+        g.door           ?? 'CLOSED',
+        'STREAM_INTRUPPED',
     ].join(',') + '\n';
 
-    console.warn(`[TCPForwarder] → ALERT: stream stopped for ${phone} (${downMs}ms)`);
-    _send(Buffer.from(line, 'utf8'));
+    console.warn(`[TCPForwarder] → ALERT: STREAM_INTRUPPED for ${phone}`);
+    _send(Buffer.from(csv, 'utf8'));
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
