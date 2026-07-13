@@ -87,6 +87,7 @@ function connect() {
 function _write(data) {
     try {
         client.write(data);
+        console.log(`[TCPForwarder] ✅ Sent ${data.length} bytes to ${FORWARD_HOST}:${FORWARD_PORT}`);
     } catch (err) {
         console.error(`[TCPForwarder] Write failed: ${err.message}`);
     }
@@ -151,7 +152,8 @@ function sendSignallingPacket(rawBuffer) {
  */
 function _send(bufferOrString) {
     if (!FORWARDER_ENABLED) {
-        // Forwarder turned off — drop silently instead of queuing forever.
+        // Forwarder turned off — drop instead of queuing forever, but say so.
+        console.warn('[TCPForwarder] ⛔ FORWARDER_ENABLED=false — packet dropped, not sent.');
         return;
     }
     if (!connected) {
